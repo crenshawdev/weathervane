@@ -117,10 +117,11 @@ pub enum CompassDirection {
 }
 
 impl CompassDirection {
-    /// Converts degrees (0-360) to the nearest compass direction.
+    /// Converts degrees to the nearest compass direction.
+    /// Normalizes to 0-359 first, so negative values and >360 are handled.
     pub fn from_degrees(degrees: i32) -> Self {
-        match degrees {
-            0..=22 | 338..=360 => Self::N,
+        match degrees.rem_euclid(360) {
+            0..=22 | 338..=359 => Self::N,
             23..=67 => Self::NE,
             68..=112 => Self::E,
             113..=157 => Self::SE,
@@ -128,7 +129,7 @@ impl CompassDirection {
             203..=247 => Self::SW,
             248..=292 => Self::W,
             293..=337 => Self::NW,
-            _ => Self::N,
+            _ => unreachable!("rem_euclid(360) always produces 0..=359"),
         }
     }
 

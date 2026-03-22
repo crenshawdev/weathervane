@@ -298,6 +298,10 @@ pub(crate) async fn detect_country_from_coords(latitude: f64, longitude: f64) ->
 
     // Fallback: approximate from European bounding boxes
     let country = approximate_european_country(latitude, longitude);
+    tracing::debug!(
+        "Reverse geocoding failed, approximated country as '{}' from bounding boxes",
+        country
+    );
     Ok(country.to_string())
 }
 

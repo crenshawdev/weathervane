@@ -8,6 +8,7 @@ use chrono::{Datelike, NaiveDate, Weekday};
 ///
 /// Core parses the ISO date string and returns the components.
 /// Frontend maps `weekday` and `month` to translated names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParsedDate {
     /// Day of week (Monday, Tuesday, etc.)
     pub weekday: Weekday,
@@ -105,10 +106,8 @@ where
     if military_time {
         dt.format("%H:%M").to_string()
     } else {
-        dt.format("%I:%M %p")
-            .to_string()
-            .trim_start_matches('0')
-            .to_string()
+        let formatted = dt.format("%I:%M %p").to_string();
+        formatted.trim_start_matches('0').to_string()
     }
 }
 

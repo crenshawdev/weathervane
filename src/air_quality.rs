@@ -122,7 +122,10 @@ pub async fn fetch_air_quality(latitude: f64, longitude: f64) -> Result<AirQuali
 
     let (aqi, standard, category) = match detect_region(latitude, longitude) {
         Region::Europe => {
-            let val = data.current.european_aqi.unwrap_or(0);
+            let val = data.current.european_aqi.unwrap_or_else(|| {
+                tracing::warn!("European AQI missing from API response, defaulting to 0");
+                0
+            });
             (
                 val,
                 AqiStandard::European,
@@ -130,7 +133,10 @@ pub async fn fetch_air_quality(latitude: f64, longitude: f64) -> Result<AirQuali
             )
         }
         _ => {
-            let val = data.current.us_aqi.unwrap_or(0);
+            let val = data.current.us_aqi.unwrap_or_else(|| {
+                tracing::warn!("US AQI missing from API response, defaulting to 0");
+                0
+            });
             (
                 val,
                 AqiStandard::Us,

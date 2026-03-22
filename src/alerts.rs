@@ -2,6 +2,8 @@
 
 //! Weather alerts from regional providers (NWS, MeteoAlarm, ECCC, BOM).
 
+use std::collections::HashSet;
+
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
@@ -241,8 +243,9 @@ async fn resolve_user_emma_id(latitude: f64, longitude: f64, country_code: &str)
             if !emma_id.starts_with(&country_prefix) {
                 continue;
             }
-            if name.to_lowercase().contains(&search_lower)
-                || search_lower.contains(&name.to_lowercase())
+            let name_lower = name.to_lowercase();
+            if name_lower.contains(&search_lower)
+                || search_lower.contains(&name_lower)
             {
                 tracing::debug!(
                     "Resolved EMMA_ID: {} ({}) for search term '{}'",
@@ -405,7 +408,7 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>> 
     let client = http_client()?;
 
     let mut all_alerts: Vec<Alert> = Vec::new();
-    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_ids: HashSet<String> = HashSet::new();
 
     for office in offices {
         let dir_url = format!(
@@ -500,7 +503,7 @@ fn parse_eccc_cap(
     xml: &str,
     lat: f64,
     lon: f64,
-    seen_ids: &mut std::collections::HashSet<String>,
+    seen_ids: &mut HashSet<String>,
 ) -> Option<Alert> {
     let cap: EcccCapAlert = quick_xml::de::from_str(xml).ok()?;
 
@@ -525,22 +528,17 @@ fn parse_eccc_cap(
         .or_else(|| cap.info_blocks.first())?;
 
     // Check if user's location is within any of the alert areas
-    let mut location_matches = false;
-    let mut area_desc = String::new();
+    let area_desc = info
+        .areas
+        .iter()
+        .find_map(|area| {
+            area.polygon
+                .as_ref()
+                .filter(|poly| point_in_polygon(lat, lon, poly))
+                .map(|_| area.area_desc.clone().unwrap_or_default())
+        });
 
-    for area in &info.areas {
-        if let Some(ref polygon) = area.polygon {
-            if point_in_polygon(lat, lon, polygon) {
-                location_matches = true;
-                area_desc = area.area_desc.clone().unwrap_or_default();
-                break;
-            }
-        }
-    }
-
-    if !location_matches {
-        return None;
-    }
+    let area_desc = area_desc?;
 
     let event = info
         .event
