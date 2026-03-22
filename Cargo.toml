@@ -5,6 +5,8 @@ edition = "2021"
 authors = ["VintageTechie (John Crenshaw) <john@vintagetechie.com>"]
 license = "MIT OR Apache-2.0"
 description = "Weather domain logic for the Tempest family of applications"
+repository = "https://gitlab.com/vintagetechie/tempest-core"
+documentation = "https://docs.rs/tempest-core"
 
 [dependencies]
 async-stream = "0.3"
