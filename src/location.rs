@@ -48,6 +48,7 @@ impl SavedLocation {
 }
 
 /// Result of automatic IP-based location detection.
+#[derive(Debug, Clone)]
 pub struct DetectedLocation {
     pub latitude: f64,
     pub longitude: f64,
