@@ -1,12 +1,12 @@
 [package]
-name = "tempest-core"
+name = "weathervane"
 version = "0.1.0"
 edition = "2021"
 authors = ["VintageTechie (John Crenshaw) <john@vintagetechie.com>"]
 license = "MIT OR Apache-2.0"
-description = "Weather domain logic for the Tempest family of applications"
-repository = "https://gitlab.com/vintagetechie/tempest-core"
-documentation = "https://docs.rs/tempest-core"
+description = "Weather data, air quality, and alerts from public APIs. Fetches, parses, and returns clean Rust types."
+repository = "https://gitlab.com/vintagetechie/weathervane"
+documentation = "https://docs.rs/weathervane"
 
 [dependencies]
 async-stream = "0.3"

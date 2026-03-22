@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 const USER_AGENT: &str =
-    "(tempest-core, https://gitlab.com/vintagetechie/tempest-core)";
+    "(weathervane, https://gitlab.com/vintagetechie/weathervane)";
 
 /// Per-request timeout applied to all outgoing HTTP calls.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);

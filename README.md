@@ -1,8 +1,8 @@
-# tempest-core
+# weathervane
 
-Weather domain logic for the Tempest family of applications.
+Weather data, air quality, and alerts from public APIs. Fetches, parses, and returns clean Rust types.
 
-This is a standalone Rust library crate that handles data fetching, response parsing, unit conversions, geographic detection, and weather domain types. It has no UI dependencies, no polling, no timers, and no config storage. Frontends call the async functions when they're ready and pass in whatever parameters they need.
+A standalone Rust library crate that handles data fetching, response parsing, unit conversions, geographic detection, and weather domain types. No UI dependencies, no polling, no timers, no config storage. Frontends call the async functions when they're ready and pass in whatever parameters they need.
 
 ## What it does
 
@@ -19,11 +19,11 @@ Add the dependency to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tempest-core = { git = "https://gitlab.com/vintagetechie/tempest-core" }
+weathervane = "0.1"
 ```
 
 ```rust
-use tempest_core::{fetch_weather, TemperatureUnit, MeasurementSystem};
+use weathervane::{fetch_weather, TemperatureUnit, MeasurementSystem};
 
 let weather = fetch_weather(40.7128, -74.0060, TemperatureUnit::Fahrenheit, MeasurementSystem::Imperial).await?;
 println!("{:?}", weather.current.condition);

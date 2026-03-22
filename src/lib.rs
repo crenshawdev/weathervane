@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Weather domain logic for the Tempest family of applications.
+//! Weather domain logic for the weathervane family of applications.
 //!
 //! This crate is purely reactive: no polling, no timers, no config storage.
 //! It exposes async functions that frontends call when they decide it's time.

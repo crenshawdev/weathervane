@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Error types for tempest-core operations.
+//! Error types for weathervane operations.
 
 use thiserror::Error;
 
-/// Errors produced by tempest-core operations.
+/// Errors produced by weathervane operations.
 #[derive(Debug, Error)]
 pub enum TempestError {
     #[error("HTTP request failed: {0}")]
