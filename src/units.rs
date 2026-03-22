@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Unit types and conversions for temperature, pressure, and measurement systems.
+
 use serde::{Deserialize, Serialize};
 
 /// Temperature scale for weather data requests and display.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TemperatureUnit {
+    /// Fahrenheit. Default because the US uses it and Open-Meteo defaults to Celsius anyway.
     #[default]
     Fahrenheit,
+    /// Celsius.
     Celsius,
 }
 
@@ -36,9 +40,12 @@ impl TemperatureUnit {
 /// Pressure display unit. The API always returns hPa, so we convert client-side.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PressureUnit {
+    /// Hectopascals (millibars). The SI default.
     #[default]
     Hpa,
+    /// Inches of mercury. Common in US weather reporting.
     InHg,
+    /// Pounds per square inch. Rarely used for weather but some people want it.
     Psi,
 }
 
@@ -75,8 +82,10 @@ impl PressureUnit {
 /// Measurement system for non-temperature units (wind speed, visibility, etc.)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MeasurementSystem {
+    /// Miles, mph, etc.
     #[default]
     Imperial,
+    /// Kilometers, km/h, etc.
     Metric,
 }
 

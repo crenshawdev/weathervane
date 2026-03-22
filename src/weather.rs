@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Weather data types and fetching from the Open-Meteo API.
+
 use serde::{Deserialize, Serialize};
 
 use crate::client::http_client;
@@ -10,49 +12,78 @@ use crate::units::{MeasurementSystem, TemperatureUnit};
 /// Current weather conditions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CurrentWeather {
+    /// Temperature in the requested unit (Fahrenheit or Celsius).
     pub temperature: f32,
+    /// Raw WMO weather code from the API.
     pub weathercode: i32,
+    /// Parsed weather condition from the WMO code.
     pub condition: WeatherCondition,
+    /// Wind speed in the requested unit (mph or km/h).
     pub windspeed: f32,
+    /// Relative humidity as a percentage (0-100).
     pub humidity: i32,
+    /// Apparent temperature accounting for wind chill and heat index.
     pub feels_like: f32,
+    /// Wind bearing in degrees (0-360).
     pub wind_direction: i32,
+    /// Wind bearing as a compass direction.
     pub compass_direction: CompassDirection,
+    /// Wind gust speed in the requested unit.
     pub wind_gusts: f32,
+    /// UV index (0-11+).
     pub uv_index: f32,
+    /// Visibility in meters. Convert with [`MeasurementSystem::convert_visibility`].
     pub visibility: f32,
+    /// Surface pressure in hPa. Convert with [`PressureUnit::convert`].
     pub pressure: f32,
+    /// Cloud cover as a percentage (0-100).
     pub cloud_cover: i32,
+    /// Dew point in the requested temperature unit.
     pub dew_point: f32,
 }
 
 /// Daily forecast data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DailyForecast {
+    /// ISO date string (e.g. "2025-11-25").
     pub date: String,
+    /// High temperature for the day.
     pub temp_max: f32,
+    /// Low temperature for the day.
     pub temp_min: f32,
+    /// Raw WMO weather code.
     pub weathercode: i32,
+    /// Parsed weather condition.
     pub condition: WeatherCondition,
+    /// Sunrise time as an ISO timestamp (local time, no timezone).
     pub sunrise: String,
+    /// Sunset time as an ISO timestamp (local time, no timezone).
     pub sunset: String,
 }
 
 /// Hourly forecast data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HourlyForecast {
+    /// ISO timestamp for this hour (local time, no timezone).
     pub time: String,
+    /// Temperature in the requested unit.
     pub temperature: f32,
+    /// Raw WMO weather code.
     pub weathercode: i32,
+    /// Parsed weather condition.
     pub condition: WeatherCondition,
+    /// Chance of precipitation as a percentage (0-100).
     pub precipitation_probability: i32,
 }
 
 /// Complete weather data from a single fetch.
 #[derive(Debug, Clone)]
 pub struct WeatherData {
+    /// Current conditions at the requested location.
     pub current: CurrentWeather,
+    /// Next 12 hours, one entry per hour.
     pub hourly: Vec<HourlyForecast>,
+    /// 7-day forecast, one entry per day.
     pub forecast: Vec<DailyForecast>,
 }
 

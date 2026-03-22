@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Weather alerts from regional providers (NWS, MeteoAlarm, ECCC, BOM).
+
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
@@ -13,10 +15,15 @@ use crate::geo::{
 /// Weather alert severity levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlertSeverity {
+    /// Low-impact advisory. Frost warnings, wind advisories, etc.
     Minor,
+    /// Moderate impact. Weather watches, flood advisories.
     Moderate,
+    /// High impact. Severe thunderstorm warnings, winter storm warnings.
     Severe,
+    /// Life-threatening. Tornado warnings, hurricane warnings.
     Extreme,
+    /// Provider didn't include a severity or used an unrecognized value.
     Unknown,
 }
 
@@ -37,11 +44,17 @@ impl AlertSeverity {
 /// Weather alert from NWS, MeteoAlarm, ECCC, or BOM.
 #[derive(Debug, Clone)]
 pub struct Alert {
+    /// Provider-specific identifier for deduplication.
     pub id: String,
+    /// Short event type (e.g. "Tornado Warning", "Heat Advisory").
     pub event: String,
+    /// How bad it is.
     pub severity: AlertSeverity,
+    /// One-line summary from the provider.
     pub headline: String,
+    /// Full alert text. May be empty for some providers (MeteoAlarm, BOM).
     pub description: String,
+    /// When this alert stops being relevant.
     pub expires: DateTime<Utc>,
 }
 

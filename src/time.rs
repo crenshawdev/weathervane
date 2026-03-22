@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Date and time parsing for ISO timestamps from the weather API.
+
 use chrono::{Datelike, NaiveDate, Weekday};
 
 /// Structured date parts for frontend formatting.
@@ -7,9 +9,13 @@ use chrono::{Datelike, NaiveDate, Weekday};
 /// Core parses the ISO date string and returns the components.
 /// Frontend maps `weekday` and `month` to translated names.
 pub struct ParsedDate {
+    /// Day of week (Monday, Tuesday, etc.)
     pub weekday: Weekday,
+    /// Month number, 1-12.
     pub month: u32,
+    /// Day of month, 1-31.
     pub day: u32,
+    /// Four-digit year.
     pub year: i32,
 }
 

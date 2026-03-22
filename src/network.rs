@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Network connectivity monitoring via NetworkManager D-Bus signals.
+
 use futures::Stream;
 use std::pin::Pin;
 
-/// Network connectivity events from NetworkManager.
+/// Network connectivity events from NetworkManager over D-Bus.
 #[derive(Debug, Clone)]
 pub enum NetworkEvent {
-    /// Network connectivity was established or restored.
+    /// System reached full network connectivity (NM_STATE_CONNECTED_GLOBAL).
     Connected,
 }
 

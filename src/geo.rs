@@ -8,10 +8,15 @@ use crate::error::Result;
 /// Geographic region for alert provider and AQI standard selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Region {
+    /// Continental US, Alaska, Hawaii. Uses NWS alerts and US EPA AQI.
     Us,
+    /// European countries covered by MeteoAlarm. Uses European AQI.
     Europe,
+    /// Canada. Uses ECCC (Environment and Climate Change Canada) alerts.
     Canada,
+    /// Australia. Uses BOM (Bureau of Meteorology) alerts.
     Australia,
+    /// Anywhere else. No alert provider available.
     Unknown,
 }
 

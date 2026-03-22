@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Error types for tempest-core operations.
+
 use thiserror::Error;
 
 /// Errors produced by tempest-core operations.

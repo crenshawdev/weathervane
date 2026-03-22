@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Air quality data and AQI categories for US and European standards.
+
 use serde::Deserialize;
 
 use crate::client::http_client;
@@ -9,18 +11,26 @@ use crate::geo::{detect_region, Region};
 /// AQI standard based on geographic region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AqiStandard {
+    /// US EPA AQI. Scale 0-500, used everywhere outside Europe.
     Us,
+    /// European AQI. Scale 0-100+, used within Europe.
     European,
 }
 
 /// US EPA AQI category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UsAqiCategory {
+    /// AQI 0-50.
     Good,
+    /// AQI 51-100.
     Moderate,
+    /// AQI 101-150. Active children and adults with respiratory issues should limit outdoor exertion.
     UnhealthySensitive,
+    /// AQI 151-200.
     Unhealthy,
+    /// AQI 201-300.
     VeryUnhealthy,
+    /// AQI 301+.
     Hazardous,
 }
 
@@ -41,11 +51,17 @@ impl UsAqiCategory {
 /// European AQI category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EuAqiCategory {
+    /// AQI 0-20.
     Good,
+    /// AQI 21-40.
     Fair,
+    /// AQI 41-60.
     Moderate,
+    /// AQI 61-80.
     Poor,
+    /// AQI 81-100.
     VeryPoor,
+    /// AQI 101+.
     ExtremelyPoor,
 }
 
@@ -67,20 +83,30 @@ impl EuAqiCategory {
 /// Frontend matches on this to produce translated descriptions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AqiCategory {
+    /// US EPA category. Returned for all non-European locations.
     Us(UsAqiCategory),
+    /// European category. Returned when coordinates fall within Europe.
     Eu(EuAqiCategory),
 }
 
 /// Current air quality data.
 #[derive(Debug, Clone)]
 pub struct AirQualityData {
+    /// AQI value. Scale depends on the standard (US 0-500, EU 0-100+).
     pub aqi: i32,
+    /// Which AQI standard was used.
     pub standard: AqiStandard,
+    /// Categorized severity for display.
     pub category: AqiCategory,
+    /// Fine particulate matter (micrograms per cubic meter).
     pub pm2_5: f32,
+    /// Coarse particulate matter (micrograms per cubic meter).
     pub pm10: f32,
+    /// Ground-level ozone (micrograms per cubic meter).
     pub ozone: f32,
+    /// NO2 concentration (micrograms per cubic meter).
     pub nitrogen_dioxide: f32,
+    /// CO concentration (micrograms per cubic meter).
     pub carbon_monoxide: f32,
 }
 

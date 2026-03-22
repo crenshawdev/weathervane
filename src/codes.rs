@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! WMO weather codes and compass direction mappings.
+
 use serde::{Deserialize, Serialize};
 
 /// WMO weather condition mapped from numeric weathercode.
@@ -7,21 +9,37 @@ use serde::{Deserialize, Serialize};
 /// Core returns the enum variant, frontends match it to produce translated strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WeatherCondition {
+    /// WMO code 0.
     ClearSky,
+    /// WMO code 1.
     MainlyClear,
+    /// WMO code 2.
     PartlyCloudy,
+    /// WMO code 3.
     Overcast,
+    /// WMO codes 45, 48.
     Foggy,
+    /// WMO codes 51, 53, 55.
     Drizzle,
+    /// WMO codes 56, 57.
     FreezingDrizzle,
+    /// WMO codes 61, 63, 65.
     Rain,
+    /// WMO codes 66, 67.
     FreezingRain,
+    /// WMO codes 71, 73, 75.
     Snow,
+    /// WMO code 77.
     SnowGrains,
+    /// WMO codes 80-82.
     RainShowers,
+    /// WMO codes 85, 86.
     SnowShowers,
+    /// WMO code 95.
     Thunderstorm,
+    /// WMO codes 96, 99.
     ThunderstormHail,
+    /// Anything outside the WMO range.
     Unknown,
 }
 
@@ -80,13 +98,21 @@ impl WeatherCondition {
 /// Cardinal/intercardinal compass direction from wind bearing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CompassDirection {
+    /// North (338-360, 0-22 degrees).
     N,
+    /// Northeast (23-67 degrees).
     NE,
+    /// East (68-112 degrees).
     E,
+    /// Southeast (113-157 degrees).
     SE,
+    /// South (158-202 degrees).
     S,
+    /// Southwest (203-247 degrees).
     SW,
+    /// West (248-292 degrees).
     W,
+    /// Northwest (293-337 degrees).
     NW,
 }
 

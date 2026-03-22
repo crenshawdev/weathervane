@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Location search, detection, and bookmarking.
+
 use serde::{Deserialize, Serialize};
 
 use crate::client::http_client;
@@ -8,9 +10,13 @@ use crate::error::{Result, TempestError};
 /// Location search result from geocoding.
 #[derive(Debug, Clone)]
 pub struct LocationResult {
+    /// Decimal latitude.
     pub latitude: f64,
+    /// Decimal longitude.
     pub longitude: f64,
+    /// Human-readable name (e.g. "Portland, Oregon, United States").
     pub display_name: String,
+    /// Country name as returned by the geocoding API.
     pub country: String,
 }
 
@@ -35,8 +41,11 @@ impl LocationResult {
 /// A bookmarked location for quick switching.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedLocation {
+    /// User-facing label for this bookmark.
     pub name: String,
+    /// Decimal latitude.
     pub latitude: f64,
+    /// Decimal longitude.
     pub longitude: f64,
 }
 
@@ -50,9 +59,13 @@ impl SavedLocation {
 /// Result of automatic IP-based location detection.
 #[derive(Debug, Clone)]
 pub struct DetectedLocation {
+    /// Decimal latitude from IP geolocation.
     pub latitude: f64,
+    /// Decimal longitude from IP geolocation.
     pub longitude: f64,
+    /// Best-effort city/country name from the IP lookup.
     pub display_name: String,
+    /// Country name, used to determine default units.
     pub country: String,
 }
 
