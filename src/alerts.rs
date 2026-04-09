@@ -247,21 +247,13 @@ async fn resolve_user_emma_id(latitude: f64, longitude: f64, country_code: &str)
             if name_lower.contains(&search_lower)
                 || search_lower.contains(&name_lower)
             {
-                tracing::debug!(
-                    "Resolved EMMA_ID: {} ({}) for search term '{}'",
-                    emma_id,
-                    name,
-                    search_term
-                );
+                tracing::debug!("Resolved EMMA_ID: {}", emma_id);
                 return Some(emma_id.clone());
             }
         }
     }
 
-    tracing::debug!(
-        "Could not resolve EMMA_ID for location: {:?}",
-        search_terms.first()
-    );
+    tracing::debug!("Could not resolve EMMA_ID for location");
     None
 }
 

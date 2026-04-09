@@ -26,7 +26,7 @@ Region detection is automatic based on coordinates. Everywhere else gets weather
 
 ```toml
 [dependencies]
-weathervane = "0.1"
+weathervane = "0.2"
 ```
 
 ```rust
@@ -72,6 +72,8 @@ println!("AQI: {} ({:?})", aqi.aqi, aqi.category);
 **Location**: city search via geocoding, IP-based auto-detection, saved location bookmarks.
 
 **Network**: monitors NetworkManager over D-Bus, yields an event when connectivity comes back. Linux only, degrades gracefully elsewhere.
+
+**Sleep**: monitors systemd-logind for resume from suspend, yields an event when the system wakes. Linux only, degrades gracefully elsewhere.
 
 ## Building
 
