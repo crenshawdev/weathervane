@@ -117,7 +117,11 @@ pub async fn fetch_air_quality(latitude: f64, longitude: f64) -> Result<AirQuali
         latitude, longitude
     );
 
-    let response = http_client()?.get(&url).send().await?;
+    let response = http_client()?
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?;
     let data: AirQualityResponse = response.json().await?;
 
     let (aqi, standard, category) = match detect_region(latitude, longitude) {

@@ -102,7 +102,7 @@ pub async fn detect_location() -> Result<DetectedLocation>
 ```
 
 IP-based geolocation via ip-api.com. Returns a struct with `latitude`, `longitude`,
-`display_name`, and `country`. Errors with `TempestError::LocationDetection` on failure.
+`display_name`, and `country`. Errors with `Error::LocationDetection` on failure.
 
 ### `search_city`
 
@@ -111,7 +111,7 @@ pub async fn search_city(city_name: &str) -> Result<Vec<LocationResult>>
 ```
 
 Geocoding search via Open-Meteo. Returns up to 10 results, each with coordinates,
-display name, and country. Errors with `TempestError::NoResults` if nothing comes back.
+display name, and country. Errors with `Error::NoResults` if nothing comes back.
 
 ### `uses_imperial_units`
 
@@ -273,17 +273,20 @@ The US bounding boxes respect the US-Canada border with regional specificity
 ## Errors
 
 ```rust
-pub enum TempestError {
-    Http(reqwest::Error),       // network or HTTP failure
-    HttpClient(String),         // couldn't build the HTTP client
-    NoResults { query: String },// geocoding search returned nothing
-    LocationDetection,          // IP geolocation failed
-    Xml(quick_xml::DeError),    // XML parsing failure (MeteoAlarm/ECCC feeds)
-    Dbus(String),               // D-Bus connection failure
+pub enum Error {
+    Timeout,
+    Network(String),
+    HttpStatus(u16),
+    Parse(String),
+    HttpClient(String),
+    NoResults { query: String },
+    LocationDetection,
+    Dbus(String),
 }
 
-pub type Result<T> = std::result::Result<T, TempestError>;
+pub type Result<T> = std::result::Result<T, Error>;
 ```
 
-All public functions return `Result<T>` from this crate. `Http` and `Xml` have
-`#[from]` impls so `?` works naturally with reqwest and quick-xml errors.
+All public functions return `Result<T>`. `From<reqwest::Error>` and `From<quick_xml::DeError>` route through `?` and bucket the failure into the right variant. Display impls are category-only, no URLs or query strings, safe to log.
+
+`0.2.0` renamed from `TempestError` and split `Http`/`Xml` into the categories above.

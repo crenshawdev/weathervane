@@ -4,27 +4,61 @@
 
 use thiserror::Error;
 
-/// Errors produced by weathervane operations.
 #[derive(Debug, Error)]
-pub enum TempestError {
-    #[error("HTTP request failed: {0}")]
-    Http(#[from] reqwest::Error),
+pub enum Error {
+    #[error("request timed out")]
+    Timeout,
+
+    #[error("network error: {0}")]
+    Network(String),
+
+    #[error("http status {0}")]
+    HttpStatus(u16),
+
+    #[error("parse error: {0}")]
+    Parse(String),
 
     #[error("failed to build HTTP client: {0}")]
     HttpClient(String),
 
-    #[error("no results found for '{query}'")]
+    #[error("no results")]
     NoResults { query: String },
 
     #[error("location detection failed")]
     LocationDetection,
 
-    #[error("failed to parse XML: {0}")]
-    Xml(#[from] quick_xml::DeError),
-
-    #[error("D-Bus connection failed: {0}")]
+    #[error("D-Bus error: {0}")]
     Dbus(String),
 }
 
-/// Convenience alias used throughout the crate.
-pub type Result<T> = std::result::Result<T, TempestError>;
+impl From<reqwest::Error> for Error {
+    fn from(e: reqwest::Error) -> Self {
+        if e.is_timeout() {
+            return Error::Timeout;
+        }
+        if let Some(status) = e.status() {
+            return Error::HttpStatus(status.as_u16());
+        }
+        if e.is_decode() {
+            return Error::Parse("json".to_string());
+        }
+        if e.is_connect() {
+            return Error::Network("connect".to_string());
+        }
+        if e.is_body() {
+            return Error::Network("body".to_string());
+        }
+        if e.is_request() {
+            return Error::Network("request".to_string());
+        }
+        Error::Network("unknown".to_string())
+    }
+}
+
+impl From<quick_xml::DeError> for Error {
+    fn from(_: quick_xml::DeError) -> Self {
+        Error::Parse("xml".to_string())
+    }
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
