@@ -1,4 +1,4 @@
-# tempest-core API
+# weathervane API
 
 Everything here is async. No polling, no timers, no background threads. The crate
 does the work when you ask it to and gives you back the result. Your frontend decides
@@ -254,6 +254,47 @@ the stream just sits there forever without yielding.
 Your frontend wraps this in whatever subscription model it uses. For iced, that
 means converting it to a `Subscription`. For something else, consume it however
 you want.
+
+## Sleep
+
+### `sleep_stream`
+
+```rust
+pub fn sleep_stream() -> Pin<Box<dyn Stream<Item = SleepEvent> + Send>>
+```
+
+Returns an async stream that yields `SleepEvent::Resumed` when the system
+wakes from suspend, watching the `PrepareForSleep` signal on
+`org.freedesktop.login1.Manager`. If the system bus or logind isn't
+available, the stream just sits there forever without yielding.
+
+Same wrapping pattern as `network_stream`. Your frontend converts it to
+whatever subscription model it uses.
+
+### `SleepEvent`
+
+```rust
+pub enum SleepEvent {
+    Resumed,
+}
+```
+
+## HTTP Client
+
+### `reset_http_client`
+
+```rust
+pub fn reset_http_client()
+```
+
+Drops and rebuilds the internal `reqwest::Client`. Use this when you have
+reason to believe the connection pool is poisoned — for example, after
+the system wakes from suspend, when pooled TCP connections may be tied
+to dead sockets the kernel hasn't reaped yet. The next request after
+this call gets a fresh client with no carryover state.
+
+The hardened defaults (TCP keepalive, zero idle pool, short idle
+timeout) are preserved on rebuild.
 
 ## Geographic Detection
 
