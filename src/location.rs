@@ -90,7 +90,7 @@ pub async fn search_city(city_name: &str) -> Result<Vec<LocationResult>> {
                 .map(LocationResult::from_geocoding_result)
                 .collect();
 
-            tracing::debug!("Found {} location(s) for '{}'", locations.len(), city_name);
+            tracing::debug!("Found {} location(s)", locations.len());
             return Ok(locations);
         }
     }
@@ -121,12 +121,7 @@ pub async fn detect_location() -> Result<DetectedLocation> {
                 _ => "Unknown".to_string(),
             };
 
-            tracing::debug!(
-                "Auto-detected location: {}, {} ({})",
-                lat,
-                lon,
-                display_name
-            );
+            tracing::debug!("Auto-detected location");
             return Ok(DetectedLocation {
                 latitude: lat,
                 longitude: lon,
