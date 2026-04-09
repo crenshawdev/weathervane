@@ -105,7 +105,11 @@ pub async fn fetch_weather(
         measurement_system.wind_speed_api_param(),
     );
 
-    let response = http_client()?.get(&url).send().await?;
+    let response = http_client()?
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?;
     let data: OpenMeteoResponse = response.json().await?;
 
     let hourly: Vec<_> = (0..data.hourly.time.len().min(12))
