@@ -25,6 +25,13 @@ Hits the Open-Meteo API and returns current conditions, 7-day forecast, and 24
 hours of hourly data. Pass real types, not strings. The crate handles the wire
 format internally via `api_param()`.
 
+For coordinates inside Japan, the current temperature is replaced with the
+nearest JMA AMeDAS station's reading (converted to the requested unit). The
+override is a quality upgrade, not a dependency: if the station table, latest
+observation timestamp, or map fetch fails, or the nearest station is further
+than 50km, the call falls through to Open-Meteo's value without surfacing an
+error. Forecast and hourly data are unaffected.
+
 Returns `WeatherData`:
 - `current: CurrentWeather` -- temperature, humidity, feels-like, wind speed/direction/gusts, UV index, visibility, pressure, cloud cover, dew point, weathercode, and pre-computed `condition` and `compass_direction`
 - `hourly: Vec<HourlyForecast>` -- up to 12 entries with time, temperature, weathercode, condition, precipitation probability
@@ -41,17 +48,41 @@ from `wind_direction`.
 ### `fetch_air_quality`
 
 ```rust
-pub async fn fetch_air_quality(latitude: f64, longitude: f64) -> Result<AirQualityData>
+pub async fn fetch_air_quality(
+    latitude: f64,
+    longitude: f64,
+    aqicn_token: Option<&str>,
+) -> Result<AirQualityData>
 ```
 
-Fetches from Open-Meteo Air Quality API. Automatically picks US or European AQI
-based on `detect_region()`.
+Pollutant concentrations always come from Open-Meteo's Air Quality API, so
+`pm2_5`, `pm10`, `ozone`, `nitrogen_dioxide`, and `carbon_monoxide` stay in
+µg/m³ regardless of which source provided the headline AQI.
+
+The headline `aqi` and its `standard`/`category` come from the World Air
+Quality Index Project (aqicn.org) when a token is supplied and the coordinates
+are outside Europe. aqicn reports on the US EPA scale globally and sources
+from ground monitoring stations, which reads closer to truth in East Asia
+than Open-Meteo's satellite-derived numbers. Pass `None` to skip aqicn and use
+Open-Meteo everywhere.
+
+Europe stays on Open-Meteo for the headline AQI even when a token is passed,
+so the `AqiStandard::European` category mapping is preserved. Users in Paris
+or Berlin get the European scale, not a US-scale number dressed up as
+European.
+
+If aqicn is selected but the request fails, the token is rejected, or the
+response is missing `data.aqi`, the call falls back to Open-Meteo's value
+without surfacing an error.
+
+Using aqicn requires attribution and is restricted to free-software and
+non-commercial use. See their [data platform terms](https://aqicn.org/data-platform/token/).
 
 Returns `AirQualityData`:
 - `aqi: i32` -- the raw index value
 - `standard: AqiStandard` -- `Us` or `European`
 - `category: AqiCategory` -- `Us(UsAqiCategory)` or `Eu(EuAqiCategory)`, computed during fetch
-- Pollutant readings: `pm2_5`, `pm10`, `ozone`, `nitrogen_dioxide`, `carbon_monoxide`
+- Pollutant readings: `pm2_5`, `pm10`, `ozone`, `nitrogen_dioxide`, `carbon_monoxide` (µg/m³, Open-Meteo)
 
 ### AQI Categories
 

@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use crate::client::http_client;
 use crate::codes::{CompassDirection, WeatherCondition};
 use crate::error::Result;
+use crate::geo::is_japan_bounds;
 use crate::units::{MeasurementSystem, TemperatureUnit};
+use crate::weather_jma::override_current_temp;
 
 /// Current weather conditions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +114,25 @@ pub async fn fetch_weather(
         .error_for_status()?;
     let data: OpenMeteoResponse = response.json().await?;
 
+    // Japan: swap the current temperature for AMeDAS ground truth. Any
+    // failure falls through to Open-Meteo's value.
+    let current_temperature = if is_japan_bounds(latitude, longitude) {
+        match override_current_temp(latitude, longitude, temperature_unit).await {
+            Some(t) => {
+                tracing::debug!(
+                    "AMeDAS override: {} -> {} ({:?})",
+                    data.current.temperature_2m,
+                    t,
+                    temperature_unit
+                );
+                t
+            }
+            None => data.current.temperature_2m,
+        }
+    } else {
+        data.current.temperature_2m
+    };
+
     let hourly: Vec<_> = (0..data.hourly.time.len().min(12))
         .map(|i| HourlyForecast {
             time: data.hourly.time[i].clone(),
@@ -136,7 +157,7 @@ pub async fn fetch_weather(
 
     Ok(WeatherData {
         current: CurrentWeather {
-            temperature: data.current.temperature_2m,
+            temperature: current_temperature,
             weathercode: data.current.weathercode,
             condition: WeatherCondition::from_code(data.current.weathercode),
             windspeed: data.current.windspeed_10m,

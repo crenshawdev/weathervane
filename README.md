@@ -9,7 +9,13 @@ No UI dependencies. No polling. No timers. No config storage. The frontend owns 
 
 ## Data sources
 
-**Weather and air quality** come from [Open-Meteo](https://open-meteo.com/), which is free and doesn't require an API key.
+**Weather and air quality** come from [Open-Meteo](https://open-meteo.com/) by default, which is free and doesn't require an API key.
+
+**Japan** gets a targeted upgrade. When coordinates fall inside Japan, the current temperature is swapped for the nearest JMA [AMeDAS](https://www.jma.go.jp/bosai/amedas/) station reading. Open-Meteo's blended model runs a few degrees cold against ground truth in Japan, so the surgical override brings the current-condition number in line without disturbing anything else.
+
+**Air quality** uses [aqicn.org](https://aqicn.org/) (World Air Quality Index Project) for the headline AQI when a token is provided and the coordinates fall outside Europe. Pollutant concentrations (PM2.5, PM10, ozone, etc) always come from Open-Meteo so the µg/m³ contract stays honest. Europe stays on Open-Meteo so the European AQI scale and its categories are preserved. Free aqicn tokens are issued at [aqicn.org/data-platform/token/](https://aqicn.org/data-platform/token/). Pass `None` to skip aqicn entirely.
+
+Using aqicn requires attribution and is restricted to free-software and non-commercial use. Read their [data platform terms](https://aqicn.org/data-platform/token/) before building on top of it. This crate is not affiliated with JMA or with the World Air Quality Index Project.
 
 **Alerts** are pulled from whichever provider covers the user's location:
 
@@ -20,13 +26,13 @@ No UI dependencies. No polling. No timers. No config storage. The frontend owns 
 | Europe | MeteoAlarm |
 | Australia | BOM (Bureau of Meteorology) |
 
-Region detection is automatic based on coordinates. Everywhere else gets weather and air quality but no alerts.
+Region detection is automatic based on coordinates. Everywhere else gets weather and air quality but no alerts. South Korea stays on Open-Meteo for both weather and air quality. KMA requires a national-ID-gated key, which is not a useful integration path for an open source crate.
 
 ## Usage
 
 ```toml
 [dependencies]
-weathervane = "0.2"
+weathervane = "0.3"
 ```
 
 ```rust
@@ -50,13 +56,16 @@ let location = detect_location().await?;
 println!("{} ({}, {})", location.display_name, location.latitude, location.longitude);
 ```
 
-Air quality automatically picks the right AQI standard (US EPA or European) based on where the coordinates land.
+Air quality automatically picks the right AQI standard (US EPA or European) based on where the coordinates land. Pass an aqicn token to get ground-station data worldwide outside Europe, or `None` to stay on Open-Meteo everywhere.
 
 ```rust
 use weathervane::fetch_air_quality;
 
-let aqi = fetch_air_quality(48.8566, 2.3522).await?;
+let aqi = fetch_air_quality(48.8566, 2.3522, None).await?;
 println!("AQI: {} ({:?})", aqi.aqi, aqi.category);
+
+// With a user-supplied token for ground-station AQI:
+let aqi = fetch_air_quality(35.68, 139.69, Some("your-token-here")).await?;
 ```
 
 ## What's in the box

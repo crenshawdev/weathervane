@@ -7,8 +7,10 @@
 //! The frontend owns all scheduling, config persistence, and passes the
 //! relevant parameters (coordinates, units, etc.) on each call.
 
+mod air_quality_aqicn;
 mod client;
 mod geo;
+mod weather_jma;
 
 pub mod air_quality;
 pub mod alerts;
