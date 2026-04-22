@@ -4,6 +4,7 @@
 
 use serde::Deserialize;
 
+use crate::air_quality_aqicn::fetch_headline_aqi;
 use crate::client::http_client;
 use crate::error::Result;
 use crate::geo::{detect_region, Region};
@@ -110,8 +111,25 @@ pub struct AirQualityData {
     pub carbon_monoxide: f32,
 }
 
-/// Fetches air quality data from the Open-Meteo Air Quality API.
-pub async fn fetch_air_quality(latitude: f64, longitude: f64) -> Result<AirQualityData> {
+/// Fetches air quality data.
+///
+/// Pollutant concentrations (pm2_5, pm10, etc) always come from Open-Meteo so
+/// the µg/m³ contract on [`AirQualityData`] stays honest. The headline `aqi`
+/// field uses the World Air Quality Index Project (aqicn.org) when a token is
+/// provided and the coordinates are outside Europe. Europe stays on Open-Meteo
+/// so the [`AqiStandard::European`] category mapping is preserved.
+///
+/// Free aqicn tokens are issued at <https://aqicn.org/data-platform/token/>.
+/// Pass `None` to skip aqicn entirely.
+///
+/// If aqicn is selected but unreachable, returns invalid data, or the token
+/// is rejected, the call falls back to Open-Meteo's AQI without surfacing an
+/// error.
+pub async fn fetch_air_quality(
+    latitude: f64,
+    longitude: f64,
+    aqicn_token: Option<&str>,
+) -> Result<AirQualityData> {
     let url = format!(
         "https://air-quality-api.open-meteo.com/v1/air-quality?latitude={}&longitude={}&current=us_aqi,european_aqi,pm2_5,pm10,ozone,nitrogen_dioxide,carbon_monoxide&timezone=auto",
         latitude, longitude
@@ -124,29 +142,44 @@ pub async fn fetch_air_quality(latitude: f64, longitude: f64) -> Result<AirQuali
         .error_for_status()?;
     let data: AirQualityResponse = response.json().await?;
 
-    let (aqi, standard, category) = match detect_region(latitude, longitude) {
-        Region::Europe => {
-            let val = data.current.european_aqi.unwrap_or_else(|| {
-                tracing::warn!("European AQI missing from API response, defaulting to 0");
-                0
-            });
-            (
-                val,
-                AqiStandard::European,
-                AqiCategory::Eu(EuAqiCategory::from_aqi(val)),
-            )
+    let region = detect_region(latitude, longitude);
+
+    // Try aqicn for the headline AQI when a token is present and we're not
+    // in Europe. Europe keeps Open-Meteo so the EU scale and category mapping
+    // are preserved.
+    let aqicn_aqi = match (aqicn_token, region) {
+        (Some(token), r) if r != Region::Europe => {
+            fetch_headline_aqi(latitude, longitude, token).await
         }
-        _ => {
-            let val = data.current.us_aqi.unwrap_or_else(|| {
-                tracing::warn!("US AQI missing from API response, defaulting to 0");
-                0
-            });
-            (
-                val,
-                AqiStandard::Us,
-                AqiCategory::Us(UsAqiCategory::from_aqi(val)),
-            )
-        }
+        _ => None,
+    };
+
+    let (aqi, standard, category) = if let Some(val) = aqicn_aqi {
+        (
+            val,
+            AqiStandard::Us,
+            AqiCategory::Us(UsAqiCategory::from_aqi(val)),
+        )
+    } else if region == Region::Europe {
+        let val = data.current.european_aqi.unwrap_or_else(|| {
+            tracing::warn!("European AQI missing from API response, defaulting to 0");
+            0
+        });
+        (
+            val,
+            AqiStandard::European,
+            AqiCategory::Eu(EuAqiCategory::from_aqi(val)),
+        )
+    } else {
+        let val = data.current.us_aqi.unwrap_or_else(|| {
+            tracing::warn!("US AQI missing from API response, defaulting to 0");
+            0
+        });
+        (
+            val,
+            AqiStandard::Us,
+            AqiCategory::Us(UsAqiCategory::from_aqi(val)),
+        )
     };
 
     Ok(AirQualityData {

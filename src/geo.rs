@@ -82,6 +82,23 @@ fn is_australia_bounds(lat: f64, lon: f64) -> bool {
     (-44.0..=-10.0).contains(&lat) && (112.0..=154.0).contains(&lon)
 }
 
+/// Checks if coordinates fall within Japan (Honshu, Hokkaido, Kyushu, Shikoku, Ryukyu chain).
+/// Used to gate the AMeDAS temperature override in fetch_weather.
+pub(crate) fn is_japan_bounds(lat: f64, lon: f64) -> bool {
+    // Honshu, Kyushu, Shikoku. West edge at 129.5E keeps South Korea
+    // (Busan ~129.08E) out. Costs Tsushima (~129.3E) the override.
+    let honshu = (30.5..=41.0).contains(&lat) && (129.5..=142.5).contains(&lon);
+
+    // Hokkaido. West edge at 139.5E keeps Vladivostok (131.87E) out.
+    let hokkaido = (41.0..=45.5).contains(&lat) && (139.5..=146.0).contains(&lon);
+
+    // Ryukyu chain plus Yakushima. West edge at 122.5E keeps Taiwan
+    // (north tip ~25.3N, 121.5E) out.
+    let ryukyu = (24.0..=30.5).contains(&lat) && (122.5..=131.0).contains(&lon);
+
+    honshu || hokkaido || ryukyu
+}
+
 /// Checks if a point is inside a polygon using the ray casting algorithm.
 /// Polygon format: "lat1,lon1 lat2,lon2 lat3,lon3 ..."
 pub(crate) fn point_in_polygon(lat: f64, lon: f64, polygon_str: &str) -> bool {
@@ -349,5 +366,32 @@ fn approximate_european_country(lat: f64, lon: f64) -> &'static str {
         }
     } else {
         "Unknown"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn japan_bounds_includes_main_cities() {
+        assert!(is_japan_bounds(35.68, 139.65), "Tokyo");
+        assert!(is_japan_bounds(34.69, 135.50), "Osaka");
+        assert!(is_japan_bounds(43.07, 141.35), "Sapporo");
+        assert!(is_japan_bounds(33.59, 130.40), "Fukuoka");
+        assert!(is_japan_bounds(26.21, 127.68), "Okinawa (Naha)");
+        assert!(is_japan_bounds(24.34, 124.16), "Ishigaki");
+        assert!(is_japan_bounds(30.33, 130.62), "Yakushima");
+    }
+
+    #[test]
+    fn japan_bounds_excludes_neighbors() {
+        assert!(!is_japan_bounds(37.57, 126.98), "Seoul");
+        assert!(!is_japan_bounds(35.18, 129.08), "Busan");
+        assert!(!is_japan_bounds(43.12, 131.87), "Vladivostok");
+        assert!(!is_japan_bounds(46.96, 142.72), "Yuzhno-Sakhalinsk");
+        assert!(!is_japan_bounds(25.03, 121.57), "Taipei");
+        assert!(!is_japan_bounds(13.44, 144.79), "Guam");
+        assert!(!is_japan_bounds(31.23, 121.47), "Shanghai");
     }
 }
