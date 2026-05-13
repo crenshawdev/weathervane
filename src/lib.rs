@@ -18,6 +18,7 @@ pub mod codes;
 pub mod error;
 pub mod location;
 pub mod network;
+pub mod pollen;
 pub mod sleep;
 pub mod time;
 pub mod units;
@@ -31,6 +32,7 @@ pub use error::{Error, Result};
 pub use geo::{detect_region, Region};
 pub use location::{DetectedLocation, LocationResult, SavedLocation};
 pub use network::NetworkEvent;
+pub use pollen::PollenData;
 pub use sleep::SleepEvent;
 pub use time::ParsedDate;
 pub use units::{MeasurementSystem, PressureUnit, TemperatureUnit};
@@ -38,10 +40,11 @@ pub use weather::{CurrentWeather, DailyForecast, HourlyForecast, WeatherData};
 
 // Re-export the async functions at crate root.
 pub use air_quality::fetch_air_quality;
-pub use client::reset_http_client;
 pub use alerts::fetch_alerts;
+pub use client::reset_http_client;
 pub use location::{detect_location, search_city, uses_imperial_units};
 pub use network::network_stream;
+pub use pollen::fetch_pollen;
 pub use sleep::sleep_stream;
 pub use time::{format_hour, format_time, is_night_time};
 pub use weather::fetch_weather;

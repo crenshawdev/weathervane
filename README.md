@@ -17,6 +17,8 @@ No UI dependencies. No polling. No timers. No config storage. The frontend owns 
 
 Using aqicn requires attribution and is restricted to free-software and non-commercial use. Read their [data platform terms](https://aqicn.org/data-platform/token/) before building on top of it. This crate is not affiliated with JMA or with the World Air Quality Index Project.
 
+**Pollen** comes from Open-Meteo's CAMS European model. Coverage is Europe only, six species in grains per cubic meter: alder, birch, grass, mugwort, olive, ragweed. Coordinates outside Europe return `None`. No free public pollen API covers the US or Asia at the moment, which is why there's no token-gated worldwide upgrade the way air quality has aqicn.
+
 **Alerts** are pulled from whichever provider covers the user's location:
 
 | Region | Provider |
@@ -68,11 +70,24 @@ println!("AQI: {} ({:?})", aqi.aqi, aqi.category);
 let aqi = fetch_air_quality(35.68, 139.69, Some("your-token-here")).await?;
 ```
 
+Pollen returns `None` outside Europe. Inside coverage, all six species are populated and species that aren't in season read as zero.
+
+```rust
+use weathervane::fetch_pollen;
+
+let pollen = fetch_pollen(48.2082, 16.3738).await?;
+if let Some(p) = pollen {
+    println!("Grass: {} grains/m³", p.grass);
+}
+```
+
 ## What's in the box
 
 **Weather**: current conditions, 12-hour hourly forecast, 7-day daily forecast. Temperature, humidity, wind, pressure, UV index, visibility, cloud cover, dew point.
 
 **Air quality**: AQI with region-appropriate categorization, PM2.5, PM10, ozone, NO2, CO.
+
+**Pollen**: current grains per cubic meter for alder, birch, grass, mugwort, olive, and ragweed. Europe only.
 
 **Alerts**: severity, headline, description, expiry. Normalized across all four providers into a single `Alert` type.
 
