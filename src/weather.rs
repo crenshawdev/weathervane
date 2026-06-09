@@ -76,6 +76,12 @@ pub struct HourlyForecast {
     pub condition: WeatherCondition,
     /// Chance of precipitation as a percentage (0-100).
     pub precipitation_probability: i32,
+    /// Precipitation amount for this hour, in the requested unit (mm or inch).
+    pub precipitation: f32,
+    /// Wind speed in the requested unit (mph or km/h).
+    pub windspeed: f32,
+    /// Wind gust speed in the requested unit.
+    pub wind_gusts: f32,
 }
 
 /// Complete weather data from a single fetch.
@@ -83,7 +89,7 @@ pub struct HourlyForecast {
 pub struct WeatherData {
     /// Current conditions at the requested location.
     pub current: CurrentWeather,
-    /// Next 12 hours, one entry per hour.
+    /// Next 24 hours, one entry per hour.
     pub hourly: Vec<HourlyForecast>,
     /// 7-day forecast, one entry per day.
     pub forecast: Vec<DailyForecast>,
@@ -100,18 +106,15 @@ pub async fn fetch_weather(
     measurement_system: MeasurementSystem,
 ) -> Result<WeatherData> {
     let url = format!(
-        "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&current=temperature_2m,weathercode,windspeed_10m,relative_humidity_2m,apparent_temperature,wind_direction_10m,wind_gusts_10m,uv_index,visibility,surface_pressure,cloud_cover,dewpoint_2m&hourly=temperature_2m,weathercode,precipitation_probability&daily=temperature_2m_max,temperature_2m_min,weathercode,sunrise,sunset&temperature_unit={}&windspeed_unit={}&timezone=auto&forecast_days=7&forecast_hours=24",
+        "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&current=temperature_2m,weathercode,windspeed_10m,relative_humidity_2m,apparent_temperature,wind_direction_10m,wind_gusts_10m,uv_index,visibility,surface_pressure,cloud_cover,dewpoint_2m&hourly=temperature_2m,weathercode,precipitation_probability,precipitation,windspeed_10m,wind_gusts_10m&daily=temperature_2m_max,temperature_2m_min,weathercode,sunrise,sunset&temperature_unit={}&windspeed_unit={}&precipitation_unit={}&timezone=auto&forecast_days=7&forecast_hours=24",
         latitude,
         longitude,
         temperature_unit.api_param(),
         measurement_system.wind_speed_api_param(),
+        measurement_system.precipitation_api_param(),
     );
 
-    let response = http_client()?
-        .get(&url)
-        .send()
-        .await?
-        .error_for_status()?;
+    let response = http_client()?.get(&url).send().await?.error_for_status()?;
     let data: OpenMeteoResponse = response.json().await?;
 
     // Japan: swap the current temperature for AMeDAS ground truth. Any
@@ -133,13 +136,16 @@ pub async fn fetch_weather(
         data.current.temperature_2m
     };
 
-    let hourly: Vec<_> = (0..data.hourly.time.len().min(12))
+    let hourly: Vec<_> = (0..data.hourly.time.len().min(24))
         .map(|i| HourlyForecast {
             time: data.hourly.time[i].clone(),
             temperature: data.hourly.temperature_2m[i],
             weathercode: data.hourly.weathercode[i],
             condition: WeatherCondition::from_code(data.hourly.weathercode[i]),
             precipitation_probability: data.hourly.precipitation_probability[i],
+            precipitation: data.hourly.precipitation[i],
+            windspeed: data.hourly.windspeed_10m[i],
+            wind_gusts: data.hourly.wind_gusts_10m[i],
         })
         .collect();
 
@@ -207,6 +213,9 @@ struct HourlyData {
     temperature_2m: Vec<f32>,
     weathercode: Vec<i32>,
     precipitation_probability: Vec<i32>,
+    precipitation: Vec<f32>,
+    windspeed_10m: Vec<f32>,
+    wind_gusts_10m: Vec<f32>,
 }
 
 #[derive(Debug, Deserialize)]

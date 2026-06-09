@@ -114,6 +114,14 @@ impl MeasurementSystem {
         }
     }
 
+    /// Returns the Open-Meteo API parameter for precipitation unit.
+    pub fn precipitation_api_param(&self) -> &'static str {
+        match self {
+            Self::Imperial => "inch",
+            Self::Metric => "mm",
+        }
+    }
+
     /// Converts visibility from meters to the appropriate unit.
     pub fn convert_visibility(&self, meters: f32) -> f32 {
         match self {
