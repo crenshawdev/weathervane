@@ -1,3 +1,11 @@
 /target
 Cargo.lock
 .idea/
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json
+
+# Local AI-tooling state and generated artifacts
+.claude/
+graphify-out/
