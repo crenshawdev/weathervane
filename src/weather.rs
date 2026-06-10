@@ -93,6 +93,11 @@ pub struct WeatherData {
     pub hourly: Vec<HourlyForecast>,
     /// 7-day forecast, one entry per day.
     pub forecast: Vec<DailyForecast>,
+    /// Seconds east of UTC for the requested location, from `timezone=auto`.
+    /// The `sunrise`/`sunset` and hourly `time` strings are in this offset's
+    /// local frame. Pass to [`crate::time::is_night_time`] so day/night is
+    /// computed at the location, not on the machine running the code.
+    pub utc_offset_seconds: i32,
 }
 
 /// Fetches weather data from the Open-Meteo API.
@@ -136,28 +141,47 @@ pub async fn fetch_weather(
         data.current.temperature_2m
     };
 
-    let hourly: Vec<_> = (0..data.hourly.time.len().min(24))
-        .map(|i| HourlyForecast {
-            time: data.hourly.time[i].clone(),
-            temperature: data.hourly.temperature_2m[i],
-            weathercode: data.hourly.weathercode[i],
-            condition: WeatherCondition::from_code(data.hourly.weathercode[i]),
-            precipitation_probability: data.hourly.precipitation_probability[i],
-            precipitation: data.hourly.precipitation[i],
-            windspeed: data.hourly.windspeed_10m[i],
-            wind_gusts: data.hourly.wind_gusts_10m[i],
+    // Open-Meteo returns each hourly field as its own parallel array. They are
+    // normally equal length, but a partial/degraded response can return a
+    // shorter array for some field — so pull every value with `.get()` and drop
+    // any row that's missing one, rather than indexing and risking a panic.
+    let hourly: Vec<_> = data
+        .hourly
+        .time
+        .iter()
+        .take(24)
+        .enumerate()
+        .filter_map(|(i, time)| {
+            let weathercode = *data.hourly.weathercode.get(i)?;
+            Some(HourlyForecast {
+                time: time.clone(),
+                temperature: *data.hourly.temperature_2m.get(i)?,
+                weathercode,
+                condition: WeatherCondition::from_code(weathercode),
+                precipitation_probability: *data.hourly.precipitation_probability.get(i)?,
+                precipitation: *data.hourly.precipitation.get(i)?,
+                windspeed: *data.hourly.windspeed_10m.get(i)?,
+                wind_gusts: *data.hourly.wind_gusts_10m.get(i)?,
+            })
         })
         .collect();
 
-    let forecast: Vec<_> = (0..data.daily.time.len())
-        .map(|i| DailyForecast {
-            date: data.daily.time[i].clone(),
-            temp_max: data.daily.temperature_2m_max[i],
-            temp_min: data.daily.temperature_2m_min[i],
-            weathercode: data.daily.weathercode[i],
-            condition: WeatherCondition::from_code(data.daily.weathercode[i]),
-            sunrise: data.daily.sunrise[i].clone(),
-            sunset: data.daily.sunset[i].clone(),
+    let forecast: Vec<_> = data
+        .daily
+        .time
+        .iter()
+        .enumerate()
+        .filter_map(|(i, date)| {
+            let weathercode = *data.daily.weathercode.get(i)?;
+            Some(DailyForecast {
+                date: date.clone(),
+                temp_max: *data.daily.temperature_2m_max.get(i)?,
+                temp_min: *data.daily.temperature_2m_min.get(i)?,
+                weathercode,
+                condition: WeatherCondition::from_code(weathercode),
+                sunrise: data.daily.sunrise.get(i)?.clone(),
+                sunset: data.daily.sunset.get(i)?.clone(),
+            })
         })
         .collect();
 
@@ -180,12 +204,17 @@ pub async fn fetch_weather(
         },
         hourly,
         forecast,
+        utc_offset_seconds: data.utc_offset_seconds,
     })
 }
 
 /// Open-Meteo API response structure.
 #[derive(Debug, Deserialize)]
 struct OpenMeteoResponse {
+    /// Seconds east of UTC for the location, returned because we request
+    /// `timezone=auto`. Defaults to 0 (UTC) if the field is ever absent.
+    #[serde(default)]
+    utc_offset_seconds: i32,
     current: CurrentData,
     hourly: HourlyData,
     daily: DailyData,

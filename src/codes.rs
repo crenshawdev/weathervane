@@ -147,3 +147,60 @@ impl CompassDirection {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compass_segment_boundaries() {
+        assert_eq!(CompassDirection::from_degrees(0), CompassDirection::N);
+        assert_eq!(CompassDirection::from_degrees(22), CompassDirection::N);
+        assert_eq!(CompassDirection::from_degrees(23), CompassDirection::NE);
+        assert_eq!(CompassDirection::from_degrees(90), CompassDirection::E);
+        assert_eq!(CompassDirection::from_degrees(180), CompassDirection::S);
+        assert_eq!(CompassDirection::from_degrees(270), CompassDirection::W);
+        assert_eq!(CompassDirection::from_degrees(337), CompassDirection::NW);
+        assert_eq!(CompassDirection::from_degrees(338), CompassDirection::N);
+    }
+
+    #[test]
+    fn compass_normalizes_out_of_range_degrees() {
+        // rem_euclid handles negatives and values past 360 without panicking.
+        assert_eq!(CompassDirection::from_degrees(360), CompassDirection::N);
+        assert_eq!(CompassDirection::from_degrees(720), CompassDirection::N);
+        assert_eq!(CompassDirection::from_degrees(-45), CompassDirection::NW);
+        assert_eq!(CompassDirection::from_degrees(-90), CompassDirection::W);
+    }
+
+    #[test]
+    fn weather_code_maps_known_conditions() {
+        assert_eq!(WeatherCondition::from_code(0), WeatherCondition::ClearSky);
+        assert_eq!(
+            WeatherCondition::from_code(2),
+            WeatherCondition::PartlyCloudy
+        );
+        assert_eq!(WeatherCondition::from_code(45), WeatherCondition::Foggy);
+        assert_eq!(WeatherCondition::from_code(48), WeatherCondition::Foggy);
+        assert_eq!(WeatherCondition::from_code(61), WeatherCondition::Rain);
+        assert_eq!(WeatherCondition::from_code(71), WeatherCondition::Snow);
+        assert_eq!(
+            WeatherCondition::from_code(81),
+            WeatherCondition::RainShowers
+        );
+        assert_eq!(
+            WeatherCondition::from_code(95),
+            WeatherCondition::Thunderstorm
+        );
+        assert_eq!(
+            WeatherCondition::from_code(99),
+            WeatherCondition::ThunderstormHail
+        );
+    }
+
+    #[test]
+    fn weather_code_unknown_outside_wmo_range() {
+        assert_eq!(WeatherCondition::from_code(100), WeatherCondition::Unknown);
+        assert_eq!(WeatherCondition::from_code(-1), WeatherCondition::Unknown);
+    }
+}

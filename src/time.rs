@@ -72,18 +72,24 @@ pub fn format_time(time_str: &str, military_time: bool) -> String {
     time_str.to_string()
 }
 
-/// Determines if current time is night (before sunrise or after sunset).
-/// Falls back to 6pm-6am if parsing fails.
-pub fn is_night_time(sunrise: &str, sunset: &str) -> bool {
-    use chrono::{Local, NaiveDateTime, TimeZone, Timelike};
+/// Determines if it is currently night (before sunrise or after sunset) at the
+/// location the forecast is for. Falls back to 6pm-6am if parsing fails.
+///
+/// `sunrise`/`sunset` are naive timestamps in the *location's* local time (as
+/// returned by Open-Meteo's `timezone=auto`). `utc_offset_seconds` is that
+/// location's offset east of UTC (`WeatherData::utc_offset_seconds`); it is
+/// used to derive "now" in the same local frame, so the result is correct even
+/// when the machine running this code is in a different timezone.
+pub fn is_night_time(sunrise: &str, sunset: &str, utc_offset_seconds: i32) -> bool {
+    use chrono::{Duration, NaiveDateTime, Timelike, Utc};
 
-    let now = Local::now();
+    // "Now" in the location's local frame: UTC plus the location's offset.
+    let now = Utc::now().naive_utc() + Duration::seconds(utc_offset_seconds as i64);
 
-    let parse_time = |time_str: &str| -> Option<chrono::DateTime<Local>> {
+    let parse_time = |time_str: &str| -> Option<NaiveDateTime> {
         NaiveDateTime::parse_from_str(time_str, "%Y-%m-%dT%H:%M:%S")
             .or_else(|_| NaiveDateTime::parse_from_str(time_str, "%Y-%m-%dT%H:%M"))
             .ok()
-            .and_then(|naive| Local.from_local_datetime(&naive).single())
     };
 
     match (parse_time(sunrise), parse_time(sunset)) {
@@ -123,5 +129,55 @@ fn format_hour_minute(hour: u32, minute: u32, military_time: bool) -> String {
             _ => (hour - 12, "PM"),
         };
         format!("{}:{:02} {}", display_hour, minute, period)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parsed_date_from_iso() {
+        let d = ParsedDate::from_iso("2025-11-25").expect("valid ISO date");
+        assert_eq!(d.year, 2025);
+        assert_eq!(d.month, 11);
+        assert_eq!(d.day, 25);
+        assert!(ParsedDate::from_iso("not-a-date").is_none());
+    }
+
+    #[test]
+    fn format_hour_handles_rfc3339_and_naive() {
+        assert_eq!(format_hour("2025-01-20T14:00:00+09:00", true), "14:00");
+        assert_eq!(format_hour("2025-01-20T14:00", true), "14:00");
+        assert_eq!(format_hour("2025-01-20T00:00", false), "12:00 AM");
+    }
+
+    // The day/night window tests use far-past / far-future bounds so the real
+    // "now" always falls clearly inside or outside, regardless of the offset
+    // (any plausible UTC offset is well under a day) or when the test runs.
+    #[test]
+    fn night_when_now_is_outside_the_window() {
+        // Daylight window entirely in the past → now is after sunset → night.
+        assert!(is_night_time(
+            "1970-01-01T06:00:00",
+            "1970-01-01T18:00:00",
+            0
+        ));
+        // Daylight window entirely in the future → now is before sunrise → night.
+        assert!(is_night_time(
+            "2999-01-01T06:00:00",
+            "2999-01-01T18:00:00",
+            9 * 3600
+        ));
+    }
+
+    #[test]
+    fn day_when_now_is_inside_the_window() {
+        // Window spans all of recorded time → now is between → not night.
+        assert!(!is_night_time(
+            "1970-01-01T00:00:00",
+            "2999-12-31T23:59:59",
+            -5 * 3600
+        ));
     }
 }

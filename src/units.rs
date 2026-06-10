@@ -130,3 +130,54 @@ impl MeasurementSystem {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pressure_hpa_passthrough() {
+        assert_eq!(PressureUnit::Hpa.convert(1013.25), 1013.25);
+    }
+
+    #[test]
+    fn pressure_converts_to_inhg_and_psi() {
+        // Standard sea-level pressure: 1013.25 hPa ≈ 29.92 inHg ≈ 14.70 PSI.
+        assert!((PressureUnit::InHg.convert(1013.25) - 29.92).abs() < 0.01);
+        assert!((PressureUnit::Psi.convert(1013.25) - 14.70).abs() < 0.01);
+    }
+
+    #[test]
+    fn pressure_format_uses_unit_precision() {
+        assert_eq!(PressureUnit::Hpa.format(1013.25), "1013 hPa");
+        assert_eq!(PressureUnit::InHg.format(1013.25), "29.92 inHg");
+        assert_eq!(PressureUnit::Psi.format(1013.25), "14.7 PSI");
+    }
+
+    #[test]
+    fn visibility_converts_from_meters() {
+        // One mile and one kilometer should round-trip to ~1.0.
+        assert!((MeasurementSystem::Imperial.convert_visibility(1609.34) - 1.0).abs() < 0.001);
+        assert!((MeasurementSystem::Metric.convert_visibility(1000.0) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn temperature_format_and_symbol() {
+        assert_eq!(TemperatureUnit::Fahrenheit.format(72.4), "72°F");
+        assert_eq!(TemperatureUnit::Celsius.format(22.6), "23°C");
+        assert_eq!(TemperatureUnit::Fahrenheit.symbol(), "°F");
+    }
+
+    #[test]
+    fn api_params_match_open_meteo() {
+        assert_eq!(TemperatureUnit::Fahrenheit.api_param(), "fahrenheit");
+        assert_eq!(TemperatureUnit::Celsius.api_param(), "celsius");
+        assert_eq!(MeasurementSystem::Imperial.wind_speed_api_param(), "mph");
+        assert_eq!(MeasurementSystem::Metric.wind_speed_api_param(), "kmh");
+        assert_eq!(
+            MeasurementSystem::Imperial.precipitation_api_param(),
+            "inch"
+        );
+        assert_eq!(MeasurementSystem::Metric.precipitation_api_param(), "mm");
+    }
+}

@@ -15,7 +15,7 @@ use std::sync::RwLock;
 
 use serde::Deserialize;
 
-use crate::client::http_client;
+use crate::client::{get_json, get_text};
 use crate::units::TemperatureUnit;
 
 const LATEST_TIME_URL: &str = "https://www.jma.go.jp/bosai/amedas/data/latest_time.txt";
@@ -101,20 +101,8 @@ async fn cached_stations() -> Option<Vec<Station>> {
 }
 
 async fn fetch_stations() -> Option<Vec<Station>> {
-    let raw: HashMap<String, RawStation> = http_client()
-        .ok()?
-        .get(STATION_TABLE_URL)
-        .send()
-        .await
-        .map_err(|e| tracing::debug!("AMeDAS station table fetch failed: {e}"))
-        .ok()?
-        .error_for_status()
-        .map_err(|e| tracing::debug!("AMeDAS station table status error: {e}"))
-        .ok()?
-        .json()
-        .await
-        .map_err(|e| tracing::debug!("AMeDAS station table parse failed: {e}"))
-        .ok()?;
+    let raw: HashMap<String, RawStation> =
+        get_json(STATION_TABLE_URL, "AMeDAS station table").await?;
 
     let mut stations = Vec::with_capacity(raw.len());
     for (code, s) in raw {
@@ -133,42 +121,21 @@ async fn fetch_stations() -> Option<Vec<Station>> {
         });
     }
 
-    tracing::debug!("AMeDAS station table loaded, {} temp-capable stations", stations.len());
+    tracing::debug!(
+        "AMeDAS station table loaded, {} temp-capable stations",
+        stations.len()
+    );
     Some(stations)
 }
 
 async fn latest_observation_time() -> Option<String> {
-    let text = http_client()
-        .ok()?
-        .get(LATEST_TIME_URL)
-        .send()
-        .await
-        .map_err(|e| tracing::debug!("AMeDAS latest_time fetch failed: {e}"))
-        .ok()?
-        .text()
-        .await
-        .map_err(|e| tracing::debug!("AMeDAS latest_time body failed: {e}"))
-        .ok()?;
-
+    let text = get_text(LATEST_TIME_URL, "AMeDAS latest_time").await?;
     parse_iso_to_compact(text.trim())
 }
 
 async fn fetch_map(timestamp: &str) -> Option<HashMap<String, RawObservation>> {
     let url = format!("{MAP_URL_PREFIX}{timestamp}.json");
-    http_client()
-        .ok()?
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| tracing::debug!("AMeDAS map fetch failed: {e}"))
-        .ok()?
-        .error_for_status()
-        .map_err(|e| tracing::debug!("AMeDAS map status error: {e}"))
-        .ok()?
-        .json()
-        .await
-        .map_err(|e| tracing::debug!("AMeDAS map parse failed: {e}"))
-        .ok()
+    get_json(&url, "AMeDAS map").await
 }
 
 /// Reformats `2026-04-21T02:30:00+09:00` to `20260421023000`.
@@ -205,8 +172,8 @@ fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let d_lat = (lat2 - lat1).to_radians();
     let d_lon = (lon2 - lon1).to_radians();
 
-    let a = (d_lat / 2.0).sin().powi(2)
-        + lat1_rad.cos() * lat2_rad.cos() * (d_lon / 2.0).sin().powi(2);
+    let a =
+        (d_lat / 2.0).sin().powi(2) + lat1_rad.cos() * lat2_rad.cos() * (d_lon / 2.0).sin().powi(2);
     2.0 * EARTH_RADIUS_KM * a.sqrt().asin()
 }
 
@@ -286,9 +253,21 @@ mod tests {
         // caller coord and several stations, the closest should come first.
         let caller = (35.68_f64, 139.65_f64);
         let stations = [
-            Station { code: "osaka".into(), lat: 34.69, lon: 135.50 },
-            Station { code: "tokyo".into(), lat: 35.69, lon: 139.70 },
-            Station { code: "sapporo".into(), lat: 43.07, lon: 141.35 },
+            Station {
+                code: "osaka".into(),
+                lat: 34.69,
+                lon: 135.50,
+            },
+            Station {
+                code: "tokyo".into(),
+                lat: 35.69,
+                lon: 139.70,
+            },
+            Station {
+                code: "sapporo".into(),
+                lat: 43.07,
+                lon: 141.35,
+            },
         ];
         let mut ranked: Vec<(f64, &Station)> = stations
             .iter()

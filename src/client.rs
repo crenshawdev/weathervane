@@ -9,11 +9,11 @@
 //! their own. `reset_http_client` is the ejection seat.
 
 use crate::error::{Error, Result};
+use serde::de::DeserializeOwned;
 use std::sync::RwLock;
 use std::time::Duration;
 
-const USER_AGENT: &str =
-    "(weathervane, https://gitlab.com/vintagetechie/weathervane)";
+const USER_AGENT: &str = "(weathervane, https://gitlab.com/vintagetechie/weathervane)";
 
 /// Per-request timeout applied to all outgoing HTTP calls.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -57,4 +57,45 @@ pub(crate) fn http_client() -> Result<reqwest::Client> {
 /// over than figure out what.
 pub fn reset_http_client() {
     *CLIENT.write().unwrap() = None;
+}
+
+/// GETs `url` and deserializes the JSON body, returning `None` on any failure
+/// (client build, send, non-2xx status, or decode). Each failure is logged at
+/// debug, tagged with `ctx`. This is the "swallow and fall through" shape the
+/// optional providers (AMeDAS, aqicn) share; it keeps that convention in one place.
+pub(crate) async fn get_json<T: DeserializeOwned>(url: &str, ctx: &str) -> Option<T> {
+    http_client()
+        .ok()?
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| tracing::debug!("{ctx} request failed: {e}"))
+        .ok()?
+        .error_for_status()
+        .map_err(|e| tracing::debug!("{ctx} status error: {e}"))
+        .ok()?
+        .json::<T>()
+        .await
+        .map_err(|e| tracing::debug!("{ctx} parse failed: {e}"))
+        .ok()
+}
+
+/// GETs `url` and returns the raw response body as text, `None` on any failure.
+///
+/// Like [`get_json`] but for non-JSON endpoints (AMeDAS `latest_time.txt`) and
+/// for APIs that carry error detail in a 200 body (aqicn). Deliberately does
+/// *not* call `error_for_status`, matching those callers, which inspect the
+/// body themselves.
+pub(crate) async fn get_text(url: &str, ctx: &str) -> Option<String> {
+    http_client()
+        .ok()?
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| tracing::debug!("{ctx} request failed: {e}"))
+        .ok()?
+        .text()
+        .await
+        .map_err(|e| tracing::debug!("{ctx} body failed: {e}"))
+        .ok()
 }

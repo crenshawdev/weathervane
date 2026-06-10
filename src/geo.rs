@@ -394,4 +394,109 @@ mod tests {
         assert!(!is_japan_bounds(13.44, 144.79), "Guam");
         assert!(!is_japan_bounds(31.23, 121.47), "Shanghai");
     }
+
+    #[test]
+    fn detect_region_routes_us_cities() {
+        assert_eq!(detect_region(40.71, -74.01), Region::Us, "New York");
+        assert_eq!(detect_region(34.05, -118.24), Region::Us, "Los Angeles");
+        assert_eq!(detect_region(41.88, -87.63), Region::Us, "Chicago");
+        assert_eq!(detect_region(47.61, -122.33), Region::Us, "Seattle");
+        assert_eq!(detect_region(61.22, -149.90), Region::Us, "Anchorage (AK)");
+        assert_eq!(detect_region(21.31, -157.86), Region::Us, "Honolulu (HI)");
+    }
+
+    #[test]
+    fn detect_region_routes_canadian_cities() {
+        // These sit north of the US border bands, so US is ruled out first.
+        assert_eq!(detect_region(43.65, -79.38), Region::Canada, "Toronto");
+        assert_eq!(detect_region(45.50, -73.57), Region::Canada, "Montreal");
+        assert_eq!(detect_region(49.28, -123.12), Region::Canada, "Vancouver");
+        assert_eq!(detect_region(53.55, -113.49), Region::Canada, "Edmonton");
+    }
+
+    #[test]
+    fn detect_region_routes_europe_and_australia() {
+        assert_eq!(detect_region(51.51, -0.13), Region::Europe, "London");
+        assert_eq!(detect_region(52.52, 13.40), Region::Europe, "Berlin");
+        assert_eq!(detect_region(40.42, -3.70), Region::Europe, "Madrid");
+        assert_eq!(detect_region(-33.87, 151.21), Region::Australia, "Sydney");
+        assert_eq!(detect_region(-31.95, 115.86), Region::Australia, "Perth");
+    }
+
+    #[test]
+    fn detect_region_unknown_outside_coverage() {
+        assert_eq!(detect_region(35.68, 139.65), Region::Unknown, "Tokyo");
+        assert_eq!(detect_region(-23.55, -46.63), Region::Unknown, "Sao Paulo");
+        assert_eq!(detect_region(-1.29, 36.82), Region::Unknown, "Nairobi");
+    }
+
+    #[test]
+    fn point_in_polygon_square() {
+        // 10x10 square, vertices as "lat,lon" pairs.
+        let square = "0,0 10,0 10,10 0,10";
+        assert!(point_in_polygon(5.0, 5.0, square), "center is inside");
+        assert!(!point_in_polygon(5.0, 15.0, square), "east of square");
+        assert!(
+            !point_in_polygon(20.0, 20.0, square),
+            "north-east of square"
+        );
+        assert!(!point_in_polygon(-5.0, 5.0, square), "south of square");
+    }
+
+    #[test]
+    fn point_in_polygon_rejects_degenerate() {
+        assert!(!point_in_polygon(5.0, 5.0, ""), "empty string");
+        assert!(
+            !point_in_polygon(5.0, 5.0, "0,0 10,10"),
+            "only two vertices"
+        );
+        assert!(!point_in_polygon(5.0, 5.0, "garbage data"), "unparseable");
+    }
+
+    #[test]
+    fn encode_geohash_known_answer() {
+        // Canonical example coordinate (Jutland) → "u4pruydqqvj".
+        assert_eq!(encode_geohash(57.64911, 10.40744, 11), "u4pruydqqvj");
+        // Lower precision is a prefix of higher precision for the same point.
+        assert_eq!(encode_geohash(57.64911, 10.40744, 6), "u4pruy");
+    }
+
+    #[test]
+    fn encode_geohash_length_matches_precision() {
+        for precision in [1, 5, 6, 9, 12] {
+            assert_eq!(encode_geohash(35.68, 139.65, precision).len(), precision);
+        }
+    }
+
+    #[test]
+    fn eccc_office_codes_map_provinces() {
+        assert!(
+            get_eccc_office_codes(43.65, -79.38).contains(&"CWTO"),
+            "Toronto -> Ontario"
+        );
+        assert!(
+            get_eccc_office_codes(53.55, -113.49).contains(&"CWNT"),
+            "Edmonton -> Alberta"
+        );
+        assert!(
+            get_eccc_office_codes(49.90, -97.14).contains(&"CWWG"),
+            "Winnipeg -> Sask/Man"
+        );
+        assert!(
+            get_eccc_office_codes(49.28, -123.12).contains(&"CWVR"),
+            "Vancouver -> Pacific"
+        );
+        assert!(
+            get_eccc_office_codes(44.65, -63.57).contains(&"CWHX"),
+            "Halifax -> Atlantic"
+        );
+    }
+
+    #[test]
+    fn eccc_office_codes_fallback_to_ontario() {
+        // Northern Ungava (58N, 70W) sits in a gap between the province bands
+        // (too far north for Quebec's lat<55, west of the Atlantic cutoff),
+        // so it exercises the empty-match fallback to CWTO.
+        assert_eq!(get_eccc_office_codes(58.0, -70.0), vec!["CWTO"]);
+    }
 }

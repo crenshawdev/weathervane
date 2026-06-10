@@ -10,17 +10,13 @@
 //! A token is required. Free tokens are issued at aqicn.org/data-platform/token/.
 //! Any failure returns `None` and the caller falls through to Open-Meteo.
 
-use crate::client::http_client;
+use crate::client::get_text;
 
 const FEED_URL_PREFIX: &str = "https://api.waqi.info/feed/geo:";
 
 /// Fetches the headline AQI (US EPA scale) for a coordinate. Returns `None`
 /// on any failure: bad token, network error, non-ok status, or missing data.
-pub(crate) async fn fetch_headline_aqi(
-    latitude: f64,
-    longitude: f64,
-    token: &str,
-) -> Option<i32> {
+pub(crate) async fn fetch_headline_aqi(latitude: f64, longitude: f64, token: &str) -> Option<i32> {
     if token.trim().is_empty() {
         return None;
     }
@@ -30,18 +26,7 @@ pub(crate) async fn fetch_headline_aqi(
         urlencoding::encode(token)
     );
 
-    let body = http_client()
-        .ok()?
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| tracing::debug!("aqicn request failed: {e}"))
-        .ok()?
-        .text()
-        .await
-        .map_err(|e| tracing::debug!("aqicn response body failed: {e}"))
-        .ok()?;
-
+    let body = get_text(&url, "aqicn").await?;
     extract_aqi(&body)
 }
 

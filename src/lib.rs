@@ -28,7 +28,7 @@ pub mod weather;
 pub use air_quality::{AirQualityData, AqiCategory, AqiStandard, EuAqiCategory, UsAqiCategory};
 pub use alerts::{Alert, AlertSeverity};
 pub use codes::{CompassDirection, WeatherCondition};
-pub use error::{Error, Result};
+pub use error::{Error, NetworkKind, ParseKind, Result};
 pub use geo::{detect_region, Region};
 pub use location::{DetectedLocation, LocationResult, SavedLocation};
 pub use network::NetworkEvent;
