@@ -76,11 +76,7 @@ pub async fn search_city(city_name: &str) -> Result<Vec<LocationResult>> {
         urlencoding::encode(city_name)
     );
 
-    let response = http_client()?
-        .get(&url)
-        .send()
-        .await?
-        .error_for_status()?;
+    let response = http_client()?.get(&url).send().await?.error_for_status()?;
     let data: GeocodingResponse = response.json().await?;
 
     if let Some(results) = data.results {
@@ -104,11 +100,7 @@ pub async fn search_city(city_name: &str) -> Result<Vec<LocationResult>> {
 pub async fn detect_location() -> Result<DetectedLocation> {
     let url = "http://ip-api.com/json/?fields=status,lat,lon,city,regionName,country";
 
-    let response = http_client()?
-        .get(url)
-        .send()
-        .await?
-        .error_for_status()?;
+    let response = http_client()?.get(url).send().await?.error_for_status()?;
     let data: IpApiResponse = response.json().await?;
 
     if data.status == "success" {

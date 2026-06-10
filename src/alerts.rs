@@ -244,9 +244,7 @@ async fn resolve_user_emma_id(latitude: f64, longitude: f64, country_code: &str)
                 continue;
             }
             let name_lower = name.to_lowercase();
-            if name_lower.contains(&search_lower)
-                || search_lower.contains(&name_lower)
-            {
+            if name_lower.contains(&search_lower) || search_lower.contains(&name_lower) {
                 tracing::debug!("Resolved EMMA_ID: {}", emma_id);
                 return Some(emma_id.clone());
             }
@@ -491,12 +489,7 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>> 
 
 /// Parses an ECCC CAP XML document into an Alert.
 /// Filters by location using polygon containment and deduplicates by identifier.
-fn parse_eccc_cap(
-    xml: &str,
-    lat: f64,
-    lon: f64,
-    seen_ids: &mut HashSet<String>,
-) -> Option<Alert> {
+fn parse_eccc_cap(xml: &str, lat: f64, lon: f64, seen_ids: &mut HashSet<String>) -> Option<Alert> {
     let cap: EcccCapAlert = quick_xml::de::from_str(xml).ok()?;
 
     if cap.status != "Actual" {
@@ -520,15 +513,12 @@ fn parse_eccc_cap(
         .or_else(|| cap.info_blocks.first())?;
 
     // Check if user's location is within any of the alert areas
-    let area_desc = info
-        .areas
-        .iter()
-        .find_map(|area| {
-            area.polygon
-                .as_ref()
-                .filter(|poly| point_in_polygon(lat, lon, poly))
-                .map(|_| area.area_desc.clone().unwrap_or_default())
-        });
+    let area_desc = info.areas.iter().find_map(|area| {
+        area.polygon
+            .as_ref()
+            .filter(|poly| point_in_polygon(lat, lon, poly))
+            .map(|_| area.area_desc.clone().unwrap_or_default())
+    });
 
     let area_desc = area_desc?;
 

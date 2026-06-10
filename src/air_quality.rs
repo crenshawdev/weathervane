@@ -135,11 +135,7 @@ pub async fn fetch_air_quality(
         latitude, longitude
     );
 
-    let response = http_client()?
-        .get(&url)
-        .send()
-        .await?
-        .error_for_status()?;
+    let response = http_client()?.get(&url).send().await?.error_for_status()?;
     let data: AirQualityResponse = response.json().await?;
 
     let region = detect_region(latitude, longitude);
