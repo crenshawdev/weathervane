@@ -22,14 +22,17 @@ fn json<T: Serialize>(value: &T) -> String {
     serde_json::to_string_pretty(value).unwrap()
 }
 
-/// Serialize → deserialize → re-serialize must be lossless. Returns the JSON
-/// so callers can snapshot the same bytes they round-tripped.
+/// Serialize → deserialize → re-serialize must be lossless. Returns the
+/// PRETTY form of the round-tripped value, so snapshots capture the bytes
+/// that survived the trip. Compares JSON strings (not values) deliberately:
+/// several wire types have no PartialEq, and serde-derived structs serialize
+/// with deterministic field order, so string equality is exact here.
 fn round_trip<T: Serialize + DeserializeOwned>(value: &T) -> String {
     let first = serde_json::to_string(value).unwrap();
     let back: T = serde_json::from_str(&first).unwrap();
     let second = serde_json::to_string(&back).unwrap();
     assert_eq!(first, second, "round-trip changed the wire form");
-    first
+    serde_json::to_string_pretty(&back).unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -116,30 +119,22 @@ fn enum_spelling_canaries() {
 
 #[test]
 fn current_weather_shape() {
-    let v = current_weather();
-    round_trip(&v);
-    insta::assert_snapshot!("current_weather", json(&v));
+    insta::assert_snapshot!("current_weather", round_trip(&current_weather()));
 }
 
 #[test]
 fn hourly_forecast_shape() {
-    let v = hourly_forecast();
-    round_trip(&v);
-    insta::assert_snapshot!("hourly_forecast", json(&v));
+    insta::assert_snapshot!("hourly_forecast", round_trip(&hourly_forecast()));
 }
 
 #[test]
 fn daily_forecast_shape() {
-    let v = daily_forecast();
-    round_trip(&v);
-    insta::assert_snapshot!("daily_forecast", json(&v));
+    insta::assert_snapshot!("daily_forecast", round_trip(&daily_forecast()));
 }
 
 #[test]
 fn saved_location_shape() {
-    let v = saved_location();
-    round_trip(&v);
-    insta::assert_snapshot!("saved_location", json(&v));
+    insta::assert_snapshot!("saved_location", round_trip(&saved_location()));
 }
 
 // ---------------------------------------------------------------------------
