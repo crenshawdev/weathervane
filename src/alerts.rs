@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::client::http_client;
 use crate::error::Result;
@@ -15,7 +15,7 @@ use crate::geo::{
 };
 
 /// Weather alert severity levels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AlertSeverity {
     /// Low-impact advisory. Frost warnings, wind advisories, etc.
     Minor,
@@ -44,7 +44,7 @@ impl AlertSeverity {
 }
 
 /// Weather alert from NWS, MeteoAlarm, ECCC, or BOM.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Alert {
     /// Provider-specific identifier for deduplication.
     pub id: String,

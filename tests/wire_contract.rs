@@ -7,11 +7,12 @@
 //! deliberately accept it as a breaking contract change (INSTA_UPDATE=always /
 //! cargo insta review) and treat the release accordingly.
 
+use chrono::{TimeZone, Utc};
 use serde::{de::DeserializeOwned, Serialize};
 use weathervane::{
-    AirQualityData, AqiCategory, CompassDirection, CurrentWeather, DailyForecast, EuAqiCategory,
-    HourlyForecast, MeasurementSystem, PressureUnit, SavedLocation, TemperatureUnit, UsAqiCategory,
-    WeatherCondition, WeatherData,
+    AirQualityData, Alert, AlertSeverity, AqiCategory, CompassDirection, CurrentWeather,
+    DailyForecast, EuAqiCategory, HourlyForecast, MeasurementSystem, PressureUnit, SavedLocation,
+    TemperatureUnit, UsAqiCategory, WeatherCondition, WeatherData,
 };
 
 // ---------------------------------------------------------------------------
@@ -250,4 +251,31 @@ fn aqi_standard_method_derives_from_category() {
     use weathervane::AqiStandard;
     assert_eq!(air_quality_us().standard(), AqiStandard::Us);
     assert_eq!(air_quality_eu().standard(), AqiStandard::European);
+}
+
+// ---------------------------------------------------------------------------
+// Alerts
+// ---------------------------------------------------------------------------
+
+fn alert() -> Alert {
+    Alert {
+        id: "NWS-IDP-PROD-123".to_string(),
+        event: "Severe Thunderstorm Warning".to_string(),
+        severity: AlertSeverity::Severe,
+        headline: "Severe thunderstorm until 10 PM EDT".to_string(),
+        description: "Wind gusts to 60 mph expected.".to_string(),
+        expires: Utc.with_ymd_and_hms(2026, 6, 11, 22, 0, 0).unwrap(),
+    }
+}
+
+#[test]
+fn alert_shape() {
+    let pretty = round_trip(&alert());
+    // Contract: alert times are UTC instants in RFC3339 with Z.
+    assert!(
+        pretty.contains("\"2026-06-11T22:00:00Z\""),
+        "expires must be RFC3339 Z"
+    );
+    insta::assert_snapshot!("alert", pretty);
+    insta::assert_snapshot!("canary_alert_severity", json(&AlertSeverity::Severe));
 }
