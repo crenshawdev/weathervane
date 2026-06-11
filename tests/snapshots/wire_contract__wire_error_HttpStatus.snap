@@ -1,0 +1,8 @@
+---
+source: tests/wire_contract.rs
+expression: round_trip(&wire)
+---
+{
+  "kind": "HttpStatus",
+  "message": "http status 429"
+}

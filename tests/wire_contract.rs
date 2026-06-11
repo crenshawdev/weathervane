@@ -11,9 +11,9 @@ use chrono::{TimeZone, Utc};
 use serde::{de::DeserializeOwned, Serialize};
 use weathervane::{
     AirQualityData, Alert, AlertSeverity, AqiCategory, CompassDirection, CurrentWeather,
-    DailyForecast, DetectedLocation, EuAqiCategory, HourlyForecast, LocationResult,
-    MeasurementSystem, PollenData, PressureUnit, SavedLocation, TemperatureUnit, UsAqiCategory,
-    WeatherCondition, WeatherData,
+    DailyForecast, DetectedLocation, Error, EuAqiCategory, HourlyForecast, LocationResult,
+    MeasurementSystem, NetworkKind, ParseKind, PollenData, PressureUnit, SavedLocation,
+    TemperatureUnit, UsAqiCategory, WeatherCondition, WeatherData, WireError,
 };
 
 // ---------------------------------------------------------------------------
@@ -321,4 +321,70 @@ fn location_shapes() {
         country: "United States".to_string(),
     };
     insta::assert_snapshot!("detected_location", round_trip(&detected));
+}
+
+// ---------------------------------------------------------------------------
+// WireError shapes and PII contracts
+// ---------------------------------------------------------------------------
+
+/// One WireError exemplar per Error variant — the `kind` strings are contract.
+fn wire_error_exemplars() -> Vec<(&'static str, Error)> {
+    vec![
+        ("Timeout", Error::Timeout),
+        ("Network", Error::Network(NetworkKind::Connect)),
+        ("HttpStatus", Error::HttpStatus(429)),
+        ("Parse", Error::Parse(ParseKind::Xml)),
+        (
+            "HttpClient",
+            Error::HttpClient("tls backend not initialized".to_string()),
+        ),
+        (
+            "NoResults",
+            Error::NoResults {
+                query: "Portlandia".to_string(),
+            },
+        ),
+        ("LocationDetection", Error::LocationDetection),
+        ("Dbus", Error::Dbus("name lost".to_string())),
+    ]
+}
+
+#[test]
+fn wire_error_shapes() {
+    for (expected_kind, err) in wire_error_exemplars() {
+        let wire = WireError::from(&err);
+        assert_eq!(wire.kind, expected_kind);
+        insta::assert_snapshot!(format!("wire_error_{expected_kind}"), round_trip(&wire));
+    }
+}
+
+/// PII contract: error payloads never carry the user's search text. The
+/// Display impl for NoResults deliberately omits the query; this pins that.
+#[test]
+fn wire_error_never_leaks_query() {
+    let err = Error::NoResults {
+        query: "SENTINEL_QUERY_55x".to_string(),
+    };
+    let wire = WireError::from(&err);
+    let serialized = serde_json::to_string(&wire).unwrap();
+    assert!(
+        !serialized.contains("SENTINEL_QUERY_55x"),
+        "query text leaked: {serialized}"
+    );
+}
+
+/// PII contract: fixture coordinates must not appear in any error payload.
+#[test]
+fn wire_error_never_leaks_coordinates() {
+    for (_, err) in wire_error_exemplars() {
+        let serialized = serde_json::to_string(&WireError::from(&err)).unwrap();
+        assert!(
+            !serialized.contains("45.5152"),
+            "latitude leaked: {serialized}"
+        );
+        assert!(
+            !serialized.contains("-122.6784"),
+            "longitude leaked: {serialized}"
+        );
+    }
 }

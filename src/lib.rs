@@ -23,6 +23,7 @@ pub mod sleep;
 pub mod time;
 pub mod units;
 pub mod weather;
+pub mod wire;
 
 // Re-export the primary types at crate root for convenience.
 pub use air_quality::{AirQualityData, AqiCategory, AqiStandard, EuAqiCategory, UsAqiCategory};
@@ -37,6 +38,7 @@ pub use sleep::SleepEvent;
 pub use time::ParsedDate;
 pub use units::{MeasurementSystem, PressureUnit, TemperatureUnit};
 pub use weather::{CurrentWeather, DailyForecast, HourlyForecast, WeatherData};
+pub use wire::WireError;
 
 // Re-export the async functions at crate root.
 pub use air_quality::fetch_air_quality;

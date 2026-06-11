@@ -1,0 +1,8 @@
+---
+source: tests/wire_contract.rs
+expression: round_trip(&wire)
+---
+{
+  "kind": "HttpClient",
+  "message": "failed to build HTTP client: tls backend not initialized"
+}
