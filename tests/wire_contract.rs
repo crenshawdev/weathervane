@@ -447,3 +447,36 @@ fn envelope_states() {
     };
     insta::assert_snapshot!("envelope_never_fetched", round_trip(&never));
 }
+
+// ---------------------------------------------------------------------------
+// Structural guards: uppercase JSON keys
+// ---------------------------------------------------------------------------
+
+/// Baseline guard: JSON keys are snake_case everywhere. PascalCase strings
+/// (enum variants, AqiCategory tag values) are legal only in VALUE position,
+/// never as keys. Walks every committed snapshot.
+#[test]
+fn no_uppercase_json_keys_in_snapshots() {
+    let key_with_uppercase = regex::Regex::new(r#""[a-z0-9_]*[A-Z][A-Za-z0-9_]*"\s*:"#).unwrap();
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("snapshots dir exists") {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("snap") {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path).unwrap();
+        if let Some(found) = key_with_uppercase.find(&content) {
+            panic!(
+                "uppercase JSON key {:?} in {}",
+                found.as_str(),
+                path.display()
+            );
+        }
+        checked += 1;
+    }
+    assert!(
+        checked >= 25,
+        "expected the full snapshot suite, found {checked} files"
+    );
+}
