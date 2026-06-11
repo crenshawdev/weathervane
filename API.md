@@ -67,7 +67,7 @@ than Open-Meteo's satellite-derived numbers. Pass `None` to skip aqicn and use
 Open-Meteo everywhere.
 
 Europe stays on Open-Meteo for the headline AQI even when a token is passed,
-so the `AqiStandard::European` category mapping is preserved. Users in Paris
+so `standard()` still reports `AqiStandard::European`. Users in Paris
 or Berlin get the European scale, not a US-scale number dressed up as
 European.
 

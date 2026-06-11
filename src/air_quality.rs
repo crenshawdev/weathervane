@@ -102,7 +102,7 @@ pub struct AirQualityData {
     /// AQI value. Scale depends on the standard (US 0-500, EU 0-100+).
     pub aqi: i32,
     /// Categorized severity for display. Also carries which standard applies;
-    /// see [`AirQualityData::standard`].
+    /// see [`AirQualityData::standard()`].
     pub category: AqiCategory,
     /// Fine particulate matter (micrograms per cubic meter).
     pub pm2_5: f32,
