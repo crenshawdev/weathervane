@@ -11,9 +11,9 @@ use chrono::{TimeZone, Utc};
 use serde::{de::DeserializeOwned, Serialize};
 use weathervane::{
     AirQualityData, Alert, AlertSeverity, AqiCategory, CompassDirection, CurrentWeather,
-    DailyForecast, DetectedLocation, Error, EuAqiCategory, HourlyForecast, LocationResult,
-    MeasurementSystem, NetworkKind, ParseKind, PollenData, PressureUnit, SavedLocation,
-    TemperatureUnit, UsAqiCategory, WeatherCondition, WeatherData, WireError,
+    DailyForecast, DetectedLocation, Envelope, EnvelopeError, Error, EuAqiCategory, HourlyForecast,
+    LocationResult, MeasurementSystem, NetworkKind, ParseKind, PollenData, PressureUnit,
+    SavedLocation, TemperatureUnit, UsAqiCategory, WeatherCondition, WeatherData, WireError,
 };
 
 // ---------------------------------------------------------------------------
@@ -404,4 +404,46 @@ fn wire_error_passthrough_is_verbatim_but_library_generated() {
         wire.message,
         "failed to build HTTP client: tls backend not initialized"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Envelope state-layer shapes
+// ---------------------------------------------------------------------------
+
+fn fetched_at() -> chrono::DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 6, 11, 13, 50, 0).unwrap()
+}
+
+fn failed_at() -> chrono::DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 6, 11, 14, 20, 0).unwrap()
+}
+
+#[test]
+fn envelope_states() {
+    // (a) healthy: data + fetched_at, error null
+    let healthy = Envelope {
+        data: Some(weather_data()),
+        fetched_at: Some(fetched_at()),
+        error: None,
+    };
+    insta::assert_snapshot!("envelope_healthy", round_trip(&healthy));
+
+    // (b) stale: last-good data retained, error reflects the failed attempt
+    let stale = Envelope {
+        data: Some(weather_data()),
+        fetched_at: Some(fetched_at()),
+        error: Some(EnvelopeError::new(&Error::Timeout, failed_at())),
+    };
+    insta::assert_snapshot!("envelope_stale", round_trip(&stale));
+
+    // (c) never-fetched: all nulls except the failure
+    let never = Envelope::<WeatherData> {
+        data: None,
+        fetched_at: None,
+        error: Some(EnvelopeError::new(
+            &Error::Network(NetworkKind::Connect),
+            failed_at(),
+        )),
+    };
+    insta::assert_snapshot!("envelope_never_fetched", round_trip(&never));
 }

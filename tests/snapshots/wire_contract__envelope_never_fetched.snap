@@ -1,0 +1,13 @@
+---
+source: tests/wire_contract.rs
+expression: round_trip(&never)
+---
+{
+  "data": null,
+  "fetched_at": null,
+  "error": {
+    "kind": "Network",
+    "message": "network error: connect",
+    "at": "2026-06-11T14:20:00Z"
+  }
+}

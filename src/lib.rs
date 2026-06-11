@@ -38,7 +38,7 @@ pub use sleep::SleepEvent;
 pub use time::ParsedDate;
 pub use units::{MeasurementSystem, PressureUnit, TemperatureUnit};
 pub use weather::{CurrentWeather, DailyForecast, HourlyForecast, WeatherData};
-pub use wire::WireError;
+pub use wire::{Envelope, EnvelopeError, WireError};
 
 // Re-export the async functions at crate root.
 pub use air_quality::fetch_air_quality;
