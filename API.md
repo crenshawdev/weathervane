@@ -59,7 +59,7 @@ Pollutant concentrations always come from Open-Meteo's Air Quality API, so
 `pm2_5`, `pm10`, `ozone`, `nitrogen_dioxide`, and `carbon_monoxide` stay in
 µg/m³ regardless of which source provided the headline AQI.
 
-The headline `aqi` and its `standard`/`category` come from the World Air
+The headline `aqi` and its `category` come from the World Air
 Quality Index Project (aqicn.org) when a token is supplied and the coordinates
 are outside Europe. aqicn reports on the US EPA scale globally and sources
 from ground monitoring stations, which reads closer to truth in East Asia
@@ -80,8 +80,8 @@ non-commercial use. See their [data platform terms](https://aqicn.org/data-platf
 
 Returns `AirQualityData`:
 - `aqi: i32` -- the raw index value
-- `standard: AqiStandard` -- `Us` or `European`
 - `category: AqiCategory` -- `Us(UsAqiCategory)` or `Eu(EuAqiCategory)`, computed during fetch
+- `standard()` -- method returning `AqiStandard` (`Us` or `European`), derived from `category`
 - Pollutant readings: `pm2_5`, `pm10`, `ozone`, `nitrogen_dioxide`, `carbon_monoxide` (µg/m³, Open-Meteo)
 
 ### AQI Categories
@@ -94,6 +94,9 @@ pub enum AqiCategory { Us(UsAqiCategory), Eu(EuAqiCategory) }
 
 Match on these for translations. `UsAqiCategory::from_aqi(i32)` and
 `EuAqiCategory::from_aqi(i32)` are public if you need to categorize values yourself.
+
+`AqiCategory` serializes adjacent-tagged — `{"standard": "Us", "level": "Good"}`.
+JSON shapes for all public types are frozen in [CONTRACT.md](CONTRACT.md).
 
 ## Weather Alerts
 
