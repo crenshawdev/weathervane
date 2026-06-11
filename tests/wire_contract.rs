@@ -475,8 +475,10 @@ fn no_uppercase_json_keys_in_snapshots() {
         }
         checked += 1;
     }
+    // Bump this floor when adding snapshot tests; it exists so silently
+    // deleted snapshots can't pass as "all checked".
     assert!(
-        checked >= 25,
-        "expected the full snapshot suite, found {checked} files"
+        checked >= 29,
+        "expected the full snapshot suite (29+), found {checked} files"
     );
 }
