@@ -1,0 +1,12 @@
+---
+source: tests/wire_contract.rs
+expression: round_trip(&Some(pollen()))
+---
+{
+  "alder": 0.0,
+  "birch": 12.4,
+  "grass": 3.1,
+  "mugwort": 0.0,
+  "olive": 0.0,
+  "ragweed": 0.7
+}

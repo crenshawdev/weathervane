@@ -11,8 +11,9 @@ use chrono::{TimeZone, Utc};
 use serde::{de::DeserializeOwned, Serialize};
 use weathervane::{
     AirQualityData, Alert, AlertSeverity, AqiCategory, CompassDirection, CurrentWeather,
-    DailyForecast, EuAqiCategory, HourlyForecast, MeasurementSystem, PressureUnit, SavedLocation,
-    TemperatureUnit, UsAqiCategory, WeatherCondition, WeatherData,
+    DailyForecast, DetectedLocation, EuAqiCategory, HourlyForecast, LocationResult,
+    MeasurementSystem, PollenData, PressureUnit, SavedLocation, TemperatureUnit, UsAqiCategory,
+    WeatherCondition, WeatherData,
 };
 
 // ---------------------------------------------------------------------------
@@ -278,4 +279,46 @@ fn alert_shape() {
     );
     insta::assert_snapshot!("alert", pretty);
     insta::assert_snapshot!("canary_alert_severity", json(&AlertSeverity::Severe));
+}
+
+// ---------------------------------------------------------------------------
+// Pollen and location shapes
+// ---------------------------------------------------------------------------
+
+fn pollen() -> PollenData {
+    PollenData {
+        alder: 0.0,
+        birch: 12.4,
+        grass: 3.1,
+        mugwort: 0.0,
+        olive: 0.0,
+        ragweed: 0.7,
+    }
+}
+
+#[test]
+fn pollen_shapes() {
+    insta::assert_snapshot!("pollen_some", round_trip(&Some(pollen())));
+    // Contract (Option policy): outside CAMS coverage pollen is null —
+    // a present key with null, never absent, never zero-filled.
+    insta::assert_snapshot!("pollen_none", json(&Option::<PollenData>::None));
+}
+
+#[test]
+fn location_shapes() {
+    let result = LocationResult {
+        latitude: 45.5152,
+        longitude: -122.6784,
+        display_name: "Portland, Oregon, United States".to_string(),
+        country: "United States".to_string(),
+    };
+    insta::assert_snapshot!("location_result", round_trip(&result));
+
+    let detected = DetectedLocation {
+        latitude: 45.52,
+        longitude: -122.68,
+        display_name: "Portland, United States".to_string(),
+        country: "United States".to_string(),
+    };
+    insta::assert_snapshot!("detected_location", round_trip(&detected));
 }

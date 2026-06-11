@@ -1,0 +1,10 @@
+---
+source: tests/wire_contract.rs
+expression: round_trip(&detected)
+---
+{
+  "latitude": 45.52,
+  "longitude": -122.68,
+  "display_name": "Portland, United States",
+  "country": "United States"
+}

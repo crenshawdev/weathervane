@@ -8,7 +8,7 @@ use crate::client::http_client;
 use crate::error::{Error, Result};
 
 /// Location search result from geocoding.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocationResult {
     /// Decimal latitude.
     pub latitude: f64,
@@ -57,7 +57,7 @@ impl SavedLocation {
 }
 
 /// Result of automatic IP-based location detection.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectedLocation {
     /// Decimal latitude from IP geolocation.
     pub latitude: f64,

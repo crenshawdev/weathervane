@@ -7,7 +7,7 @@
 //! error so callers can treat pollen as a region-optional feature the same
 //! way they already do for alerts.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::client::http_client;
 use crate::error::Result;
@@ -19,7 +19,7 @@ use crate::error::Result;
 /// (off-season, or not regionally present), which is distinct from "no
 /// data." When the API has no coverage at all, [`fetch_pollen`] returns
 /// `Ok(None)` instead of zero-filled data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PollenData {
     /// Alder (Alnus). Early-spring tree pollen.
     pub alder: f32,
