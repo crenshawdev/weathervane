@@ -9,8 +9,9 @@
 
 use serde::{de::DeserializeOwned, Serialize};
 use weathervane::{
-    CompassDirection, CurrentWeather, DailyForecast, HourlyForecast, MeasurementSystem,
-    PressureUnit, SavedLocation, TemperatureUnit, WeatherCondition, WeatherData,
+    AirQualityData, AqiCategory, CompassDirection, CurrentWeather, DailyForecast, EuAqiCategory,
+    HourlyForecast, MeasurementSystem, PressureUnit, SavedLocation, TemperatureUnit, UsAqiCategory,
+    WeatherCondition, WeatherData,
 };
 
 // ---------------------------------------------------------------------------
@@ -195,4 +196,58 @@ fn legacy_saved_location_json_still_parses() {
 #[test]
 fn weather_data_shape() {
     insta::assert_snapshot!("weather_data", round_trip(&weather_data()));
+}
+
+// ---------------------------------------------------------------------------
+// Air quality shapes
+// ---------------------------------------------------------------------------
+
+fn air_quality_us() -> AirQualityData {
+    AirQualityData {
+        aqi: 42,
+        category: AqiCategory::Us(UsAqiCategory::Good),
+        pm2_5: 8.1,
+        pm10: 14.9,
+        ozone: 61.3,
+        nitrogen_dioxide: 9.4,
+        carbon_monoxide: 142.0,
+    }
+}
+
+fn air_quality_eu() -> AirQualityData {
+    AirQualityData {
+        aqi: 35,
+        category: AqiCategory::Eu(EuAqiCategory::Fair),
+        pm2_5: 8.1,
+        pm10: 14.9,
+        ozone: 61.3,
+        nitrogen_dioxide: 9.4,
+        carbon_monoxide: 142.0,
+    }
+}
+
+#[test]
+fn air_quality_shapes() {
+    insta::assert_snapshot!("air_quality_us", round_trip(&air_quality_us()));
+    insta::assert_snapshot!("air_quality_eu", round_trip(&air_quality_eu()));
+}
+
+/// The adjacent tag must round-trip Eu(Good) to Eu(Good) — the exact bug an
+/// untagged representation would have shipped ("Good" exists in both scales).
+#[test]
+fn aqi_category_round_trips_exactly() {
+    let eu = AqiCategory::Eu(EuAqiCategory::Good);
+    let back: AqiCategory = serde_json::from_str(&serde_json::to_string(&eu).unwrap()).unwrap();
+    assert_eq!(back, eu);
+
+    let us = AqiCategory::Us(UsAqiCategory::Good);
+    let back: AqiCategory = serde_json::from_str(&serde_json::to_string(&us).unwrap()).unwrap();
+    assert_eq!(back, us);
+}
+
+#[test]
+fn aqi_standard_method_derives_from_category() {
+    use weathervane::AqiStandard;
+    assert_eq!(air_quality_us().standard(), AqiStandard::Us);
+    assert_eq!(air_quality_eu().standard(), AqiStandard::European);
 }

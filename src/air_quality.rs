@@ -2,7 +2,7 @@
 
 //! Air quality data and AQI categories for US and European standards.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::air_quality_aqicn::fetch_headline_aqi;
 use crate::client::http_client;
@@ -19,7 +19,7 @@ pub enum AqiStandard {
 }
 
 /// US EPA AQI category.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UsAqiCategory {
     /// AQI 0-50.
     Good,
@@ -50,7 +50,7 @@ impl UsAqiCategory {
 }
 
 /// European AQI category.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EuAqiCategory {
     /// AQI 0-20.
     Good,
@@ -82,7 +82,13 @@ impl EuAqiCategory {
 
 /// AQI category, region-specific.
 /// Frontend matches on this to produce translated descriptions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Wire form is adjacent-tagged (the one documented exception to the
+/// serde-defaults baseline): `{"standard": "Us", "level": "Good"}`.
+/// The tag disambiguates levels like `Good`/`Moderate` that exist in both
+/// scales, so deserialization is exact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "standard", content = "level")]
 pub enum AqiCategory {
     /// US EPA category. Returned for all non-European locations.
     Us(UsAqiCategory),
@@ -91,13 +97,12 @@ pub enum AqiCategory {
 }
 
 /// Current air quality data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AirQualityData {
     /// AQI value. Scale depends on the standard (US 0-500, EU 0-100+).
     pub aqi: i32,
-    /// Which AQI standard was used.
-    pub standard: AqiStandard,
-    /// Categorized severity for display.
+    /// Categorized severity for display. Also carries which standard applies;
+    /// see [`AirQualityData::standard`].
     pub category: AqiCategory,
     /// Fine particulate matter (micrograms per cubic meter).
     pub pm2_5: f32,
@@ -109,6 +114,16 @@ pub struct AirQualityData {
     pub nitrogen_dioxide: f32,
     /// CO concentration (micrograms per cubic meter).
     pub carbon_monoxide: f32,
+}
+
+impl AirQualityData {
+    /// Which AQI standard applies, derived from the category variant.
+    pub fn standard(&self) -> AqiStandard {
+        match self.category {
+            AqiCategory::Us(_) => AqiStandard::Us,
+            AqiCategory::Eu(_) => AqiStandard::European,
+        }
+    }
 }
 
 /// Fetches air quality data.
@@ -150,37 +165,24 @@ pub async fn fetch_air_quality(
         _ => None,
     };
 
-    let (aqi, standard, category) = if let Some(val) = aqicn_aqi {
-        (
-            val,
-            AqiStandard::Us,
-            AqiCategory::Us(UsAqiCategory::from_aqi(val)),
-        )
+    let (aqi, category) = if let Some(val) = aqicn_aqi {
+        (val, AqiCategory::Us(UsAqiCategory::from_aqi(val)))
     } else if region == Region::Europe {
         let val = data.current.european_aqi.unwrap_or_else(|| {
             tracing::warn!("European AQI missing from API response, defaulting to 0");
             0
         });
-        (
-            val,
-            AqiStandard::European,
-            AqiCategory::Eu(EuAqiCategory::from_aqi(val)),
-        )
+        (val, AqiCategory::Eu(EuAqiCategory::from_aqi(val)))
     } else {
         let val = data.current.us_aqi.unwrap_or_else(|| {
             tracing::warn!("US AQI missing from API response, defaulting to 0");
             0
         });
-        (
-            val,
-            AqiStandard::Us,
-            AqiCategory::Us(UsAqiCategory::from_aqi(val)),
-        )
+        (val, AqiCategory::Us(UsAqiCategory::from_aqi(val)))
     };
 
     Ok(AirQualityData {
         aqi,
-        standard,
         category,
         pm2_5: data.current.pm2_5.unwrap_or(0.0),
         pm10: data.current.pm10.unwrap_or(0.0),
