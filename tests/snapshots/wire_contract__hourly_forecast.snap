@@ -1,0 +1,14 @@
+---
+source: tests/wire_contract.rs
+expression: json(&v)
+---
+{
+  "time": "2026-06-11T10:00",
+  "temperature": 71.3,
+  "weathercode": 2,
+  "condition": "PartlyCloudy",
+  "precipitation_probability": 20,
+  "precipitation": 0.1,
+  "windspeed": 8.5,
+  "wind_gusts": 12.4
+}

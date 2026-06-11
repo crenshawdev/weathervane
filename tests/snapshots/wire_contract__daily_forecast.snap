@@ -1,0 +1,13 @@
+---
+source: tests/wire_contract.rs
+expression: json(&v)
+---
+{
+  "date": "2026-06-11",
+  "temp_max": 78.4,
+  "temp_min": 58.1,
+  "weathercode": 3,
+  "condition": "Overcast",
+  "sunrise": "2026-06-11T05:21",
+  "sunset": "2026-06-11T20:29"
+}

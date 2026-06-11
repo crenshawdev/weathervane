@@ -1,0 +1,5 @@
+---
+source: tests/wire_contract.rs
+expression: "json(&WeatherCondition::PartlyCloudy)"
+---
+"PartlyCloudy"

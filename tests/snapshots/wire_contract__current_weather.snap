@@ -1,0 +1,20 @@
+---
+source: tests/wire_contract.rs
+expression: json(&v)
+---
+{
+  "temperature": 71.3,
+  "weathercode": 2,
+  "condition": "PartlyCloudy",
+  "windspeed": 8.5,
+  "humidity": 54,
+  "feels_like": 69.8,
+  "wind_direction": 305,
+  "compass_direction": "NW",
+  "wind_gusts": 12.4,
+  "uv_index": 6.5,
+  "visibility": 24135.0,
+  "pressure": 1015.2,
+  "cloud_cover": 40,
+  "dew_point": 52.7
+}

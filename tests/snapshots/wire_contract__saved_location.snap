@@ -1,0 +1,9 @@
+---
+source: tests/wire_contract.rs
+expression: json(&v)
+---
+{
+  "name": "Home",
+  "latitude": 45.5152,
+  "longitude": -122.6784
+}

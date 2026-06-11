@@ -9,3 +9,4 @@ entities.json
 # Local AI-tooling state and generated artifacts
 .claude/
 graphify-out/
+tests/snapshots/*.snap.new
