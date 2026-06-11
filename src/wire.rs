@@ -14,6 +14,12 @@ use crate::error::Error;
 /// wire never carries `NoResults { query }` payload data (PII contract: error
 /// payloads contain no search text and no coordinates) and the shape stays
 /// flat regardless of `Error`'s internal structure.
+///
+/// The passthrough variants (`HttpClient`, `Dbus`) carry library-generated
+/// strings (reqwest builder / zbus errors), never user input or request URLs:
+/// URL-bearing reqwest failures map to payload-free variants (`Timeout`,
+/// `Network`, `HttpStatus`, `Parse`), so coordinates in query URLs can never
+/// reach the wire. Construction sites must keep it that way.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireError {
     /// `Error` variant name: "Timeout", "Network", "HttpStatus", "Parse",

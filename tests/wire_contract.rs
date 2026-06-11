@@ -388,3 +388,20 @@ fn wire_error_never_leaks_coordinates() {
         );
     }
 }
+
+/// Documents that Dbus/HttpClient messages ARE passed through verbatim —
+/// they carry library-generated strings only; construction sites must never
+/// embed user input or request URLs (which contain coordinates).
+#[test]
+fn wire_error_passthrough_is_verbatim_but_library_generated() {
+    let wire = WireError::from(&Error::Dbus("name lost".to_string()));
+    assert_eq!(wire.message, "D-Bus error: name lost");
+
+    let wire = WireError::from(&Error::HttpClient(
+        "tls backend not initialized".to_string(),
+    ));
+    assert_eq!(
+        wire.message,
+        "failed to build HTTP client: tls backend not initialized"
+    );
+}
