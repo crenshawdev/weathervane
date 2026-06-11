@@ -85,7 +85,7 @@ pub struct HourlyForecast {
 }
 
 /// Complete weather data from a single fetch.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeatherData {
     /// Current conditions at the requested location.
     pub current: CurrentWeather,

@@ -10,7 +10,7 @@
 use serde::{de::DeserializeOwned, Serialize};
 use weathervane::{
     CompassDirection, CurrentWeather, DailyForecast, HourlyForecast, MeasurementSystem,
-    PressureUnit, SavedLocation, TemperatureUnit, WeatherCondition,
+    PressureUnit, SavedLocation, TemperatureUnit, WeatherCondition, WeatherData,
 };
 
 // ---------------------------------------------------------------------------
@@ -80,6 +80,15 @@ fn daily_forecast() -> DailyForecast {
         condition: WeatherCondition::Overcast,
         sunrise: "2026-06-11T05:21".to_string(),
         sunset: "2026-06-11T20:29".to_string(),
+    }
+}
+
+fn weather_data() -> WeatherData {
+    WeatherData {
+        current: current_weather(),
+        hourly: vec![hourly_forecast()],
+        forecast: vec![daily_forecast()],
+        utc_offset_seconds: -14400,
     }
 }
 
@@ -181,4 +190,9 @@ fn legacy_saved_location_json_still_parses() {
         serde_json::from_str(r#"{"name":"Home","latitude":45.5152,"longitude":-122.6784}"#)
             .unwrap();
     assert_eq!(parsed, saved_location());
+}
+
+#[test]
+fn weather_data_shape() {
+    insta::assert_snapshot!("weather_data", round_trip(&weather_data()));
 }
