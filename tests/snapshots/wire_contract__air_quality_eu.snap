@@ -12,5 +12,6 @@ expression: round_trip(&air_quality_eu())
   "pm10": 14.9,
   "ozone": 61.3,
   "nitrogen_dioxide": 9.4,
-  "carbon_monoxide": 142.0
+  "carbon_monoxide": 142.0,
+  "aqi_source": "OpenMeteo"
 }

@@ -94,7 +94,8 @@ US standard:
   "pm10": 14.9,
   "ozone": 61.3,
   "nitrogen_dioxide": 9.4,
-  "carbon_monoxide": 142.0
+  "carbon_monoxide": 142.0,
+  "aqi_source": "OpenMeteo"
 }
 ```
 
@@ -110,7 +111,8 @@ EU standard:
   "pm10": 14.9,
   "ozone": 61.3,
   "nitrogen_dioxide": 9.4,
-  "carbon_monoxide": 142.0
+  "carbon_monoxide": 142.0,
+  "aqi_source": "OpenMeteo"
 }
 ```
 

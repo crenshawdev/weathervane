@@ -10,7 +10,7 @@
 use chrono::{TimeZone, Utc};
 use serde::{de::DeserializeOwned, Serialize};
 use weathervane::{
-    AirQualityData, Alert, AlertSeverity, AqiCategory, CompassDirection, CurrentWeather,
+    AirQualityData, Alert, AlertSeverity, AqiCategory, AqiSource, CompassDirection, CurrentWeather,
     DailyForecast, DetectedLocation, Envelope, EnvelopeError, Error, EuAqiCategory, HourlyForecast,
     LocationResult, MeasurementSystem, NetworkKind, ParseKind, PollenData, PressureUnit,
     SavedLocation, TemperatureUnit, UsAqiCategory, WeatherCondition, WeatherData, WireError,
@@ -213,6 +213,7 @@ fn air_quality_us() -> AirQualityData {
         ozone: 61.3,
         nitrogen_dioxide: 9.4,
         carbon_monoxide: 142.0,
+        aqi_source: AqiSource::OpenMeteo,
     }
 }
 
@@ -225,6 +226,7 @@ fn air_quality_eu() -> AirQualityData {
         ozone: 61.3,
         nitrogen_dioxide: 9.4,
         carbon_monoxide: 142.0,
+        aqi_source: AqiSource::OpenMeteo,
     }
 }
 
@@ -252,6 +254,15 @@ fn aqi_standard_method_derives_from_category() {
     use weathervane::AqiStandard;
     assert_eq!(air_quality_us().standard(), AqiStandard::Us);
     assert_eq!(air_quality_eu().standard(), AqiStandard::European);
+}
+
+/// A pre-field payload (the original 7 keys, no `aqi_source`) must still
+/// deserialize, defaulting to OpenMeteo via `#[serde(default)]`.
+#[test]
+fn air_quality_without_aqi_source_defaults_to_open_meteo() {
+    let legacy = r#"{"aqi":42,"category":{"standard":"Us","level":"Good"},"pm2_5":8.1,"pm10":14.9,"ozone":61.3,"nitrogen_dioxide":9.4,"carbon_monoxide":142.0}"#;
+    let parsed: AirQualityData = serde_json::from_str(legacy).unwrap();
+    assert_eq!(parsed.aqi_source, AqiSource::OpenMeteo);
 }
 
 // ---------------------------------------------------------------------------

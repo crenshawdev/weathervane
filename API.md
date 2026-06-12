@@ -83,6 +83,24 @@ Returns `AirQualityData`:
 - `category: AqiCategory` -- `Us(UsAqiCategory)` or `Eu(EuAqiCategory)`, computed during fetch
 - `standard()` -- method returning `AqiStandard` (`Us` or `European`), derived from `category`
 - Pollutant readings: `pm2_5`, `pm10`, `ozone`, `nitrogen_dioxide`, `carbon_monoxide` (µg/m³, Open-Meteo)
+- `aqi_source: AqiSource` -- which provider supplied the headline `aqi`/`category` for this fetch
+
+### AqiSource
+
+```rust
+pub enum AqiSource { Aqicn, OpenMeteo }
+```
+
+Records which provider actually supplied the headline AQI:
+
+- `Aqicn` -- aqicn.org (World Air Quality Index Project), US EPA scale; selected
+  when a token is passed and the coordinates are outside Europe and the request
+  succeeded.
+- `OpenMeteo` -- the default. Used for Europe, when no token is passed, or when
+  aqicn was selected but failed and the call fell back to Open-Meteo.
+
+`OpenMeteo` is the `Default`. The field is `#[serde(default)]`, so payloads
+serialized before this field existed deserialize as `OpenMeteo`.
 
 ### AQI Categories
 

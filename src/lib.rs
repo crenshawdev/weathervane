@@ -26,7 +26,9 @@ pub mod weather;
 pub mod wire;
 
 // Re-export the primary types at crate root for convenience.
-pub use air_quality::{AirQualityData, AqiCategory, AqiStandard, EuAqiCategory, UsAqiCategory};
+pub use air_quality::{
+    AirQualityData, AqiCategory, AqiSource, AqiStandard, EuAqiCategory, UsAqiCategory,
+};
 pub use alerts::{Alert, AlertSeverity};
 pub use codes::{CompassDirection, WeatherCondition};
 pub use error::{Error, NetworkKind, ParseKind, Result};

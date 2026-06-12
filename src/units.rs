@@ -106,6 +106,14 @@ impl MeasurementSystem {
         }
     }
 
+    /// Returns the precipitation unit label.
+    pub fn precipitation_unit(&self) -> &'static str {
+        match self {
+            Self::Imperial => "in",
+            Self::Metric => "mm",
+        }
+    }
+
     /// Returns the Open-Meteo API parameter for wind speed unit.
     pub fn wind_speed_api_param(&self) -> &'static str {
         match self {
@@ -166,6 +174,12 @@ mod tests {
         assert_eq!(TemperatureUnit::Fahrenheit.format(72.4), "72°F");
         assert_eq!(TemperatureUnit::Celsius.format(22.6), "23°C");
         assert_eq!(TemperatureUnit::Fahrenheit.symbol(), "°F");
+    }
+
+    #[test]
+    fn precipitation_unit_labels() {
+        assert_eq!(MeasurementSystem::Imperial.precipitation_unit(), "in");
+        assert_eq!(MeasurementSystem::Metric.precipitation_unit(), "mm");
     }
 
     #[test]

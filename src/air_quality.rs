@@ -18,6 +18,19 @@ pub enum AqiStandard {
     European,
 }
 
+/// Which provider supplied the headline AQI.
+///
+/// Recorded at fetch time by [`fetch_air_quality`]; consumers use it for
+/// source attribution without re-deriving the selection logic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AqiSource {
+    /// World Air Quality Index Project (aqicn.org), US EPA scale.
+    Aqicn,
+    /// Open-Meteo (the default; used for Europe, no token, or aqicn fallback).
+    #[default]
+    OpenMeteo,
+}
+
 /// US EPA AQI category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UsAqiCategory {
@@ -114,6 +127,10 @@ pub struct AirQualityData {
     pub nitrogen_dioxide: f32,
     /// CO concentration (micrograms per cubic meter).
     pub carbon_monoxide: f32,
+    /// Which provider supplied the headline AQI. Defaults to OpenMeteo for
+    /// wire back-compat with payloads serialized before this field existed.
+    #[serde(default)]
+    pub aqi_source: AqiSource,
 }
 
 impl AirQualityData {
@@ -165,20 +182,32 @@ pub async fn fetch_air_quality(
         _ => None,
     };
 
-    let (aqi, category) = if let Some(val) = aqicn_aqi {
-        (val, AqiCategory::Us(UsAqiCategory::from_aqi(val)))
+    let (aqi, category, aqi_source) = if let Some(val) = aqicn_aqi {
+        (
+            val,
+            AqiCategory::Us(UsAqiCategory::from_aqi(val)),
+            AqiSource::Aqicn,
+        )
     } else if region == Region::Europe {
         let val = data.current.european_aqi.unwrap_or_else(|| {
             tracing::warn!("European AQI missing from API response, defaulting to 0");
             0
         });
-        (val, AqiCategory::Eu(EuAqiCategory::from_aqi(val)))
+        (
+            val,
+            AqiCategory::Eu(EuAqiCategory::from_aqi(val)),
+            AqiSource::OpenMeteo,
+        )
     } else {
         let val = data.current.us_aqi.unwrap_or_else(|| {
             tracing::warn!("US AQI missing from API response, defaulting to 0");
             0
         });
-        (val, AqiCategory::Us(UsAqiCategory::from_aqi(val)))
+        (
+            val,
+            AqiCategory::Us(UsAqiCategory::from_aqi(val)),
+            AqiSource::OpenMeteo,
+        )
     };
 
     Ok(AirQualityData {
@@ -189,6 +218,7 @@ pub async fn fetch_air_quality(
         ozone: data.current.ozone.unwrap_or(0.0),
         nitrogen_dioxide: data.current.nitrogen_dioxide.unwrap_or(0.0),
         carbon_monoxide: data.current.carbon_monoxide.unwrap_or(0.0),
+        aqi_source,
     })
 }
 
@@ -207,4 +237,14 @@ struct AirQualityCurrentData {
     ozone: Option<f32>,
     nitrogen_dioxide: Option<f32>,
     carbon_monoxide: Option<f32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aqi_source_defaults_to_open_meteo() {
+        assert_eq!(AqiSource::default(), AqiSource::OpenMeteo);
+    }
 }
