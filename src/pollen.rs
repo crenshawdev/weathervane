@@ -105,11 +105,13 @@ mod tests {
     use super::*;
 
     fn parse(json_text: &str) -> Option<PollenData> {
-        let resp: PollenResponse = serde_json::from_str(json_text).unwrap();
+        let resp: PollenResponse = serde_json::from_str(json_text)
+            .expect("pollen test helper: inline JSON did not deserialize as PollenResponse");
         from_current(&resp.current)
     }
 
     #[test]
+    #[rustfmt::skip]
     fn returns_some_when_covered_with_active_species() {
         let json = r#"{
             "current": {
@@ -121,13 +123,14 @@ mod tests {
                 "ragweed_pollen": 0.0
             }
         }"#;
-        let data = parse(json).unwrap();
+        let data = parse(json).expect("returns_some_when_covered_with_active_species: parse() returned None for an active-species fixture");
         assert_eq!(data.birch, 0.1);
         assert_eq!(data.grass, 3.5);
         assert_eq!(data.alder, 0.0);
     }
 
     #[test]
+    #[rustfmt::skip]
     fn returns_some_when_covered_with_all_zero_species() {
         let json = r#"{
             "current": {
@@ -139,7 +142,7 @@ mod tests {
                 "ragweed_pollen": 0.0
             }
         }"#;
-        let data = parse(json).unwrap();
+        let data = parse(json).expect("returns_some_when_covered_with_all_zero_species: parse() returned None for an all-zero-but-present fixture");
         assert_eq!(data.grass, 0.0);
     }
 
@@ -159,6 +162,7 @@ mod tests {
     }
 
     #[test]
+    #[rustfmt::skip]
     fn zero_fills_when_some_species_null_but_others_present() {
         let json = r#"{
             "current": {
@@ -170,7 +174,7 @@ mod tests {
                 "ragweed_pollen": null
             }
         }"#;
-        let data = parse(json).unwrap();
+        let data = parse(json).expect("zero_fills_when_some_species_null_but_others_present: parse() returned None when at least one species is present");
         assert_eq!(data.grass, 5.0);
         assert_eq!(data.alder, 0.0);
     }
