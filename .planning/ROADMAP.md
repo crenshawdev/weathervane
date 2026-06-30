@@ -50,11 +50,18 @@ two buckets is deferred to a future milestone per REQUIREMENTS.md.
   3. Every `.unwrap()` in the `pollen.rs:108,124,142,158,173` and `time.rs:141` test helpers is replaced with `.expect("…")` carrying the fixture name; a deliberately corrupted fixture produces an actionable failure message rather than an opaque panic (FAULT-03)
   4. All four CI gates pass: `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `cargo build --workspace`, `cargo test --workspace`
 
-**Plans**: TBD
+**Plans**: 2 plans
+
+- [ ] 02-01-PLAN.md — weather_jma.rs NaN-safe sort comparator + tracing::debug! + range validation in fetch_stations() (FAULT-01, FAULT-02)
+- [ ] 02-02-PLAN.md — Test-helper .expect() fixture context in pollen.rs and time.rs (FAULT-03)
+
+**Cross-cutting constraints:**
+
+- All four CI gates pass (cargo fmt --check, cargo clippy --workspace -- -D warnings, cargo build --workspace, cargo test --workspace)
 
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Security Audit | 3/3 | Complete   | 2026-06-30 |
-| 2. General Faults Pass | 0/TBD | Not started | - |
+| 2. General Faults Pass | 0/2 | Not started | - |
