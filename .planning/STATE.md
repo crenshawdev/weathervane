@@ -97,6 +97,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-30T18:28:34.582Z
-Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-security-audit/01-CONTEXT.md
+Last session: 2026-06-30 (resumed)
+Stopped at: Session resumed, proceeding to /gsd-execute-phase 2
+Resume file: .planning/phases/02-general-faults-pass/.continue-here.md
