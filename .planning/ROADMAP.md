@@ -10,7 +10,7 @@ two buckets is deferred to a future milestone per REQUIREMENTS.md.
 
 ## Phases
 
-- [ ] **Phase 1: Security Audit** - Strip tokens and URLs from logs, validate external inputs, and make D-Bus deserialization panic-safe
+- [x] **Phase 1: Security Audit** - Strip tokens and URLs from logs, validate external inputs, and make D-Bus deserialization panic-safe (completed 2026-06-30)
 - [ ] **Phase 2: General Faults Pass** - Replace reachable production panics with safe alternatives and give test-helper unwraps fixture context
 
 ## Phase Details
@@ -28,11 +28,11 @@ two buckets is deferred to a future milestone per REQUIREMENTS.md.
   4. A malformed D-Bus message delivered to `network_stream()` (`network.rs:67`) or `sleep_stream()` (`sleep.rs:65`) produces a `debug!` log entry and the stream continues without panicking; a test feeding a malformed signal exercises both paths
   5. All four CI gates pass: `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `cargo build --workspace`, `cargo test --workspace`
 
-**Plans**: 3 plans
+**Plans**: 3/3 plans complete
 
-- [ ] 01-01-PLAN.md — URL/token leak hardening: sanitize_url + e.without_url() in client.rs, wiremock+tracing-test leak harness, sentinel assertion in wire_contract.rs (SEC-01, SEC-02, SEC-05)
-- [ ] 01-02-PLAN.md — Coord validation in detect_location() rejecting out-of-range/NaN/infinite ip-api.com responses with Error::LocationDetection (SEC-03)
-- [ ] 01-03-PLAN.md — D-Bus stream resilience: decode helpers + explicit-match loops in network.rs and sleep.rs, observable at debug level (SEC-04)
+- [x] 01-01-PLAN.md — URL/token leak hardening: sanitize_url + e.without_url() in client.rs, wiremock+tracing-test leak harness, sentinel assertion in wire_contract.rs (SEC-01, SEC-02, SEC-05)
+- [x] 01-02-PLAN.md — Coord validation in detect_location() rejecting out-of-range/NaN/infinite ip-api.com responses with Error::LocationDetection (SEC-03)
+- [x] 01-03-PLAN.md — D-Bus stream resilience: decode helpers + explicit-match loops in network.rs and sleep.rs, observable at debug level (SEC-04)
 
 **Cross-cutting constraints:**
 
@@ -56,5 +56,5 @@ two buckets is deferred to a future milestone per REQUIREMENTS.md.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Security Audit | 0/3 | Not started | - |
+| 1. Security Audit | 3/3 | Complete   | 2026-06-30 |
 | 2. General Faults Pass | 0/TBD | Not started | - |
