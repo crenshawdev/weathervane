@@ -75,19 +75,19 @@ Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SEC-01 | TBD | Pending |
-| SEC-02 | TBD | Pending |
-| SEC-03 | TBD | Pending |
-| SEC-04 | TBD | Pending |
-| SEC-05 | TBD | Pending |
-| FAULT-01 | TBD | Pending |
-| FAULT-02 | TBD | Pending |
-| FAULT-03 | TBD | Pending |
+| SEC-01 | Phase 1 | Pending |
+| SEC-02 | Phase 1 | Pending |
+| SEC-03 | Phase 1 | Pending |
+| SEC-04 | Phase 1 | Pending |
+| SEC-05 | Phase 1 | Pending |
+| FAULT-01 | Phase 2 | Pending |
+| FAULT-02 | Phase 2 | Pending |
+| FAULT-03 | Phase 2 | Pending |
 
 **Coverage:**
 - v0.9 requirements: 8 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 8
+- Mapped to phases: 8
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-06-30 — narrow restart of TechDebt milestone*
