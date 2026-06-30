@@ -14,6 +14,17 @@ each commit, and the four CLAUDE.md contracts — no i18n, silent regional fallt
 no PII in errors/tracing, Linux-only streams degrade silently — hold across every code
 path.
 
+## Current Milestone: v0.9 TechDebt
+
+**Goal:** Eliminate token/URL leakage from logs and remove reachable panics from
+production code paths.
+
+**Target features:**
+- Security audit: aqicn-token-safe logging, URL sanitization, input validation
+  for external API responses, panic-safe D-Bus deserialization
+- General faults pass: replace reachable `unwrap`/`partial_cmp` panics with safe
+  alternatives; add fixture context to test-helper unwraps
+
 ## Requirements
 
 ### Validated
@@ -36,11 +47,10 @@ path.
 
 <!-- Current scope. Building toward these. -->
 
-- [ ] Tech debt audit pass: clippy lint cleanup, dead-code removal, panic-path review
-- [ ] Security audit pass: input parsing, HTTP error handling, PII leak surfaces,
-      version-pin audit (cargo-audit / cargo-deny)
-- [ ] Hardening for v1.0 release: stabilize public API, lock wire-contract version,
-      confirm Linux-only graceful-degradation guarantees
+- [ ] Security audit: token/URL leakage from logs, input validation for external
+      API responses, PII-safe error/tracing paths, panic-safe D-Bus deserialization
+- [ ] General faults pass: reachable panics in production code replaced with safe
+      alternatives; test-helper unwraps carry fixture context
 
 ### Out of Scope
 
@@ -105,4 +115,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-30 after initialization*
+*Last updated: 2026-06-30 — Milestone v0.9 TechDebt started (narrow restart)*
