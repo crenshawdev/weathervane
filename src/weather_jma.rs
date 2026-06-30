@@ -106,19 +106,9 @@ async fn fetch_stations() -> Option<Vec<Station>> {
 
     let mut stations = Vec::with_capacity(raw.len());
     for (code, s) in raw {
-        // elems is an 8-char flag string. First char == '1' means this
-        // station reports temperature. See JMA AMeDAS docs.
-        if s.elems.as_bytes().first() != Some(&b'1') {
-            continue;
+        if let Some(station) = parse_station_entry(code, s) {
+            stations.push(station);
         }
-        if s.lat.len() != 2 || s.lon.len() != 2 {
-            continue;
-        }
-        stations.push(Station {
-            code,
-            lat: deg_min_to_decimal(s.lat[0], s.lat[1]),
-            lon: deg_min_to_decimal(s.lon[0], s.lon[1]),
-        });
     }
 
     tracing::debug!(
@@ -126,6 +116,36 @@ async fn fetch_stations() -> Option<Vec<Station>> {
         stations.len()
     );
     Some(stations)
+}
+
+/// Validates and converts a single raw station table entry into a `Station`,
+/// or `None` if the entry should be dropped. Extracted from `fetch_stations`
+/// so the drop paths (length mismatch, out-of-range coordinates) can be unit
+/// tested without a network fetch.
+fn parse_station_entry(code: String, s: RawStation) -> Option<Station> {
+    // elems is an 8-char flag string. First char == '1' means this
+    // station reports temperature. See JMA AMeDAS docs. Non-temp stations
+    // are dropped silently (not logged): the JMA table lists thousands of
+    // them and logging each would flood debug output.
+    if s.elems.as_bytes().first() != Some(&b'1') {
+        return None;
+    }
+    if s.lat.len() != 2 || s.lon.len() != 2 {
+        tracing::debug!("dropping JMA station {code}: lat/lon array length mismatch");
+        return None;
+    }
+    let lat = deg_min_to_decimal(s.lat[0], s.lat[1]);
+    let lon = deg_min_to_decimal(s.lon[0], s.lon[1]);
+    // Closed-range `contains` returns `false` for NaN and infinite values
+    // under PartialOrd semantics, so this also rejects malformed numeric
+    // content with no separate is_finite() check needed. Do not "simplify"
+    // this to a manual `lat <= 90.0 && lat >= -90.0` comparison chain -
+    // that form can silently regress NaN handling.
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        tracing::debug!("dropping JMA station {code}: coordinates out of range");
+        return None;
+    }
+    Some(Station { code, lat, lon })
 }
 
 async fn latest_observation_time() -> Option<String> {
@@ -305,5 +325,55 @@ mod tests {
             .collect();
         ranked.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         assert_eq!(ranked[0].1.code, "tokyo");
+    }
+
+    #[test]
+    fn station_array_length_mismatch_is_dropped() {
+        let well_formed = RawStation {
+            lat: vec![35.0, 41.0],
+            lon: vec![139.0, 45.0],
+            elems: "10000000".to_string(),
+        };
+        let bad = RawStation {
+            lat: vec![35.0],
+            lon: vec![139.0, 45.0],
+            elems: "10000000".to_string(),
+        };
+        let mut raw = HashMap::new();
+        raw.insert("well_formed".to_string(), well_formed);
+        raw.insert("bad".to_string(), bad);
+
+        let stations: Vec<Station> = raw
+            .into_iter()
+            .filter_map(|(code, s)| parse_station_entry(code, s))
+            .collect();
+
+        assert_eq!(stations.len(), 1);
+        assert_eq!(stations[0].code, "well_formed");
+    }
+
+    #[test]
+    fn station_out_of_range_coords_are_dropped() {
+        let well_formed = RawStation {
+            lat: vec![35.0, 41.0],
+            lon: vec![139.0, 45.0],
+            elems: "10000000".to_string(),
+        };
+        let bad = RawStation {
+            lat: vec![200.0, 0.0],
+            lon: vec![139.0, 45.0],
+            elems: "10000000".to_string(),
+        };
+        let mut raw = HashMap::new();
+        raw.insert("well_formed".to_string(), well_formed);
+        raw.insert("bad".to_string(), bad);
+
+        let stations: Vec<Station> = raw
+            .into_iter()
+            .filter_map(|(code, s)| parse_station_entry(code, s))
+            .collect();
+
+        assert_eq!(stations.len(), 1);
+        assert_eq!(stations[0].code, "well_formed");
     }
 }
