@@ -1,0 +1,33 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-06-30T20:08:55.541Z",
+  "phase": "02",
+  "phase_name": "General Faults Pass",
+  "phase_dir": ".planning/phases/02-general-faults-pass",
+  "plan": null,
+  "task": null,
+  "total_tasks": 3,
+  "status": "paused",
+  "stage": "planning_complete_pre_execution",
+  "completed_tasks": [
+    {"id": "plan-phase-2", "name": "Plan Phase 2 (gsd-planner + gsd-plan-checker)", "status": "done", "commit": "1d6f7da"}
+  ],
+  "remaining_tasks": [
+    {"id": "02-01-task-1", "name": "weather_jma.rs:276 — replace partial_cmp().unwrap() with NaN-safe comparator + add nan_station_coords_do_not_panic test", "status": "not_started", "plan": "02-01", "requirement": "FAULT-01"},
+    {"id": "02-01-task-2", "name": "weather_jma.rs:103-129 — add tracing::debug! for dropped JMA stations on length-mismatch or out-of-range lat/lon + 2 new tests", "status": "not_started", "plan": "02-01", "requirement": "FAULT-02"},
+    {"id": "02-02-task-1", "name": "pollen.rs:108,124,142,173 and time.rs:141 — upgrade unwrap/expect to carry fixture context", "status": "not_started", "plan": "02-02", "requirement": "FAULT-03"}
+  ],
+  "blockers": [],
+  "async_jobs": [],
+  "human_actions_pending": [],
+  "decisions": [
+    {"decision": "Planned Phase 2 without CONTEXT.md and without RESEARCH.md", "rationale": "Phase scope is mechanical and unambiguous — ROADMAP Success Criteria 1-4 + REQUIREMENTS FAULT-01/02/03 specify exact file:line targets. User confirmed via AskUserQuestion.", "phase": "02"},
+    {"decision": "Bundled FAULT-01 and FAULT-02 into a single plan (02-01)", "rationale": "Both edit src/weather_jma.rs; co-locating reduces executor context churn and matches Phase 1's plan 01-01 bundling pattern.", "phase": "02"},
+    {"decision": "FAULT-03 is its own plan (02-02)", "rationale": "Spans pollen.rs + time.rs (disjoint from weather_jma.rs), same change pattern (mechanical .expect() upgrade) — single plan is correct granularity.", "phase": "02"},
+    {"decision": "Both plans assigned to wave 1 with disjoint files_modified", "rationale": "weather_jma.rs vs pollen.rs+time.rs do not collide, so /gsd-execute-phase can run them in parallel.", "phase": "02"},
+    {"decision": "Skipped step 12.5 (plan-bounce) — configured script /home/john/.gsd/codex-plan-bounce.sh not present on disk", "rationale": "Workflow §12.5 fallback: 'If bounce is activated but no script is configured, display warning and skip.'", "phase": "02"}
+  ],
+  "uncommitted_files": ["CLAUDE.md"],
+  "next_action": "/clear, then /gsd-execute-phase 2 — both plans (02-01 and 02-02) execute in parallel in wave 1.",
+  "context_notes": "Phase 2 planning is COMPLETE and committed (1d6f7da). Planner found one source-grounding correction worth carrying forward to the executor: REQUIREMENTS.md says pollen.rs:158 is an unwrap site, but it's actually assert!(parse(json).is_none()). Plan 02-02 documents this discrepancy and covers the 4 real unwrap sites (108, 124, 142, 173) plus time.rs:141. Plan-checker (haiku) returned VERIFICATION PASSED with no blockers. CLAUDE.md has uncommitted modifications from before this session — unrelated to Phase 2."
+}
