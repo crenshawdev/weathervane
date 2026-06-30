@@ -59,6 +59,17 @@ pub fn reset_http_client() {
     *CLIENT.write().unwrap() = None;
 }
 
+/// Returns `url` with its query string replaced by `?[redacted]`.
+/// Used to keep tokens out of tracing output.
+#[allow(dead_code)]
+pub(crate) fn sanitize_url(url: &str) -> String {
+    if let Some(i) = url.find('?') {
+        format!("{}?[redacted]", &url[..i])
+    } else {
+        url.to_string()
+    }
+}
+
 /// GETs `url` and deserializes the JSON body, returning `None` on any failure
 /// (client build, send, non-2xx status, or decode). Each failure is logged at
 /// debug, tagged with `ctx`. This is the "swallow and fall through" shape the
@@ -69,14 +80,14 @@ pub(crate) async fn get_json<T: DeserializeOwned>(url: &str, ctx: &str) -> Optio
         .get(url)
         .send()
         .await
-        .map_err(|e| tracing::debug!("{ctx} request failed: {e}"))
+        .map_err(|e| tracing::debug!("{ctx} request failed: {}", e.without_url()))
         .ok()?
         .error_for_status()
-        .map_err(|e| tracing::debug!("{ctx} status error: {e}"))
+        .map_err(|e| tracing::debug!("{ctx} status error: {}", e.without_url()))
         .ok()?
         .json::<T>()
         .await
-        .map_err(|e| tracing::debug!("{ctx} parse failed: {e}"))
+        .map_err(|e| tracing::debug!("{ctx} parse failed: {}", e.without_url()))
         .ok()
 }
 
@@ -92,10 +103,10 @@ pub(crate) async fn get_text(url: &str, ctx: &str) -> Option<String> {
         .get(url)
         .send()
         .await
-        .map_err(|e| tracing::debug!("{ctx} request failed: {e}"))
+        .map_err(|e| tracing::debug!("{ctx} request failed: {}", e.without_url()))
         .ok()?
         .text()
         .await
-        .map_err(|e| tracing::debug!("{ctx} body failed: {e}"))
+        .map_err(|e| tracing::debug!("{ctx} body failed: {}", e.without_url()))
         .ok()
 }
