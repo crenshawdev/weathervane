@@ -400,6 +400,22 @@ fn wire_error_never_leaks_coordinates() {
     }
 }
 
+/// SEC-05 defense-in-depth: WireError serialization must never contain the aqicn
+/// sentinel token. No current path embeds it, but this test pins that fact so any
+/// future regression in the From<&Error> mapping is caught at the wire boundary.
+#[test]
+fn wire_error_never_leaks_aqicn_sentinel() {
+    const AQICN_LEAK_SENTINEL_TOKEN_DO_NOT_LOG: &str = "AQICN_LEAK_SENTINEL_TOKEN_DO_NOT_LOG";
+    for (_, err) in wire_error_exemplars() {
+        let serialized = serde_json::to_string(&WireError::from(&err)).unwrap();
+        assert!(
+            !serialized.contains(AQICN_LEAK_SENTINEL_TOKEN_DO_NOT_LOG),
+            "aqicn sentinel leaked into WireError for {:?}: {serialized}",
+            err
+        );
+    }
+}
+
 /// Documents that Dbus/HttpClient messages ARE passed through verbatim —
 /// they carry library-generated strings only; construction sites must never
 /// embed user input or request URLs (which contain coordinates).
