@@ -273,7 +273,37 @@ mod tests {
             .iter()
             .map(|s| (haversine_km(caller.0, caller.1, s.lat, s.lon), s))
             .collect();
-        ranked.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        ranked.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        assert_eq!(ranked[0].1.code, "tokyo");
+    }
+
+    #[test]
+    fn nan_station_coords_do_not_panic() {
+        // A NaN-lat station must not panic the comparator and must not
+        // displace a well-formed, nearer station from rank 0.
+        let caller = (35.68_f64, 139.65_f64);
+        let stations = [
+            Station {
+                code: "tokyo".into(),
+                lat: 35.69,
+                lon: 139.70,
+            },
+            Station {
+                code: "sapporo".into(),
+                lat: 43.07,
+                lon: 141.35,
+            },
+            Station {
+                code: "nan_station".into(),
+                lat: f64::NAN,
+                lon: 139.0,
+            },
+        ];
+        let mut ranked: Vec<(f64, &Station)> = stations
+            .iter()
+            .map(|s| (haversine_km(caller.0, caller.1, s.lat, s.lon), s))
+            .collect();
+        ranked.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         assert_eq!(ranked[0].1.code, "tokyo");
     }
 }
