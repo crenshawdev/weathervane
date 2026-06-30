@@ -25,7 +25,10 @@ two buckets is deferred to a future milestone per REQUIREMENTS.md.
   3. `detect_location()` (`location.rs:100-127`) returns a typed `Error::LocationDetection` when an ip-api.com response carries `lat` outside `[-90, 90]` or `lon` outside `[-180, 180]`; a unit test covers the reject path and confirms no out-of-range coordinate is returned
   4. A malformed D-Bus message delivered to `network_stream()` (`network.rs:67`) or `sleep_stream()` (`sleep.rs:65`) produces a `debug!` log entry and the stream continues without panicking; a test feeding a malformed signal exercises both paths
   5. All four CI gates pass: `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `cargo build --workspace`, `cargo test --workspace`
-**Plans**: TBD
+**Plans**: 3 plans
+- [ ] 01-01-PLAN.md — URL/token leak hardening: sanitize_url + e.without_url() in client.rs, wiremock+tracing-test leak harness, sentinel assertion in wire_contract.rs (SEC-01, SEC-02, SEC-05)
+- [ ] 01-02-PLAN.md — Coord validation in detect_location() rejecting out-of-range/NaN/infinite ip-api.com responses with Error::LocationDetection (SEC-03)
+- [ ] 01-03-PLAN.md — D-Bus stream resilience: decode helpers + explicit-match loops in network.rs and sleep.rs, observable at debug level (SEC-04)
 
 ### Phase 2: General Faults Pass
 **Goal**: No reachable panic remains in production code paths flagged by the audit, and every test-helper `.unwrap()` carries fixture context on failure
@@ -42,5 +45,5 @@ two buckets is deferred to a future milestone per REQUIREMENTS.md.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Security Audit | 0/TBD | Not started | - |
+| 1. Security Audit | 0/3 | Not started | - |
 | 2. General Faults Pass | 0/TBD | Not started | - |
