@@ -11,7 +11,7 @@ two buckets is deferred to a future milestone per REQUIREMENTS.md.
 ## Phases
 
 - [x] **Phase 1: Security Audit** - Strip tokens and URLs from logs, validate external inputs, and make D-Bus deserialization panic-safe (completed 2026-06-30)
-- [ ] **Phase 2: General Faults Pass** - Replace reachable production panics with safe alternatives and give test-helper unwraps fixture context
+- [x] **Phase 2: General Faults Pass** - Replace reachable production panics with safe alternatives and give test-helper unwraps fixture context (completed 2026-06-30)
 
 ## Phase Details
 
@@ -50,10 +50,10 @@ two buckets is deferred to a future milestone per REQUIREMENTS.md.
   3. Every `.unwrap()` in the `pollen.rs:108,124,142,158,173` and `time.rs:141` test helpers is replaced with `.expect("…")` carrying the fixture name; a deliberately corrupted fixture produces an actionable failure message rather than an opaque panic (FAULT-03)
   4. All four CI gates pass: `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `cargo build --workspace`, `cargo test --workspace`
 
-**Plans**: 2 plans
+**Plans**: 2/2 plans complete
 
-- [ ] 02-01-PLAN.md — weather_jma.rs NaN-safe sort comparator + tracing::debug! + range validation in fetch_stations() (FAULT-01, FAULT-02)
-- [ ] 02-02-PLAN.md — Test-helper .expect() fixture context in pollen.rs and time.rs (FAULT-03)
+- [x] 02-01-PLAN.md — weather_jma.rs NaN-safe sort comparator + tracing::debug! + range validation in fetch_stations() (FAULT-01, FAULT-02)
+- [x] 02-02-PLAN.md — Test-helper .expect() fixture context in pollen.rs and time.rs (FAULT-03)
 
 **Cross-cutting constraints:**
 
@@ -64,4 +64,4 @@ two buckets is deferred to a future milestone per REQUIREMENTS.md.
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Security Audit | 3/3 | Complete   | 2026-06-30 |
-| 2. General Faults Pass | 0/2 | Not started | - |
+| 2. General Faults Pass | 2/2 | Complete   | 2026-06-30 |
