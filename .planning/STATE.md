@@ -4,7 +4,7 @@ milestone: v0.9
 milestone_name: TechDebt
 current_phase: 9
 status: Awaiting next milestone
-stopped_at: Session resumed — milestone v0.9 complete, awaiting /gsd-audit-milestone
+stopped_at: Milestone v0.9 archived and tagged; awaiting /gsd-new-milestone
 last_updated: "2026-07-01T12:12:19.016Z"
 last_activity: 2026-07-01
 last_activity_desc: Milestone v0.9 completed and archived
@@ -21,10 +21,10 @@ current_phase_name: security-audit
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-06-30)
+See: .planning/PROJECT.md (updated 2026-07-01)
 
 **Core value:** Public types crossing process boundaries are wire-stable, and the four CLAUDE.md contracts (no i18n, silent regional fallthrough, no PII in errors/tracing, Linux-only streams degrade silently) hold across every code path.
-**Current focus:** Phase 01 — security-audit
+**Current focus:** v0.9 shipped — planning next milestone (/gsd-new-milestone)
 
 ## Current Position
 
