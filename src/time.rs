@@ -138,7 +138,8 @@ mod tests {
 
     #[test]
     fn parsed_date_from_iso() {
-        let d = ParsedDate::from_iso("2025-11-25").expect("valid ISO date");
+        let d = ParsedDate::from_iso("2025-11-25")
+            .expect("parsed_date_from_iso: ISO date \"2025-11-25\" should parse");
         assert_eq!(d.year, 2025);
         assert_eq!(d.month, 11);
         assert_eq!(d.day, 25);

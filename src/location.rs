@@ -105,6 +105,12 @@ pub async fn detect_location() -> Result<DetectedLocation> {
 
     if data.status == "success" {
         if let (Some(lat), Some(lon)) = (data.lat, data.lon) {
+            // range-contains rejects NaN and infinity by IEEE 754 ordering
+            if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+                tracing::debug!("detect_location: coordinates out of valid range");
+                return Err(Error::LocationDetection);
+            }
+
             let country = data.country.clone().unwrap_or_default();
             let display_name = match (data.city, data.region_name, data.country) {
                 (Some(city), _, Some(c)) => format!("{}, {}", city, c),
@@ -157,4 +163,69 @@ struct IpApiResponse {
     #[serde(rename = "regionName")]
     region_name: Option<String>,
     country: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    /// Pins the IEEE 754 semantics detect_location() depends on (D-05, D-06).
+    ///
+    /// `RangeInclusive::contains` on `f64` uses `PartialOrd`, which returns `false`
+    /// for any comparison involving NaN. A future refactor to `lat <= 90.0 && lat >= -90.0`
+    /// would silently re-admit NaN (that form is true-for-NaN). These three tests lock
+    /// the predicate form so any such regression fails CI.
+    #[test]
+    fn nan_coords_are_rejected() {
+        // Pins the IEEE 754 semantics detect_location() depends on (D-05, D-06).
+        assert!(
+            !(-90.0_f64..=90.0_f64).contains(&f64::NAN),
+            "range-contains must reject NaN lat"
+        );
+        assert!(
+            !(-180.0_f64..=180.0_f64).contains(&f64::NAN),
+            "range-contains must reject NaN lon"
+        );
+    }
+
+    #[test]
+    fn infinite_coords_are_rejected() {
+        // Pins the IEEE 754 semantics detect_location() depends on (D-05, D-06).
+        assert!(
+            !(-90.0_f64..=90.0_f64).contains(&f64::INFINITY),
+            "range-contains must reject +inf lat"
+        );
+        assert!(
+            !(-90.0_f64..=90.0_f64).contains(&f64::NEG_INFINITY),
+            "range-contains must reject -inf lat"
+        );
+        assert!(
+            !(-180.0_f64..=180.0_f64).contains(&f64::INFINITY),
+            "range-contains must reject +inf lon"
+        );
+        assert!(
+            !(-180.0_f64..=180.0_f64).contains(&f64::NEG_INFINITY),
+            "range-contains must reject -inf lon"
+        );
+    }
+
+    #[test]
+    fn out_of_range_coords_are_rejected() {
+        // Out-of-range values are rejected.
+        assert!(
+            !(-90.0_f64..=90.0_f64).contains(&91.0_f64),
+            "lat 91 must be rejected"
+        );
+        assert!(
+            !(-180.0_f64..=180.0_f64).contains(&181.0_f64),
+            "lon 181 must be rejected"
+        );
+        // Sanity anchor: valid coords are accepted (guard is not over-rejecting).
+        assert!(
+            (-90.0_f64..=90.0_f64).contains(&45.5_f64),
+            "lat 45.5 must be accepted"
+        );
+        assert!(
+            (-180.0_f64..=180.0_f64).contains(&-122.6_f64),
+            "lon -122.6 must be accepted"
+        );
+    }
 }

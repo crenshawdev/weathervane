@@ -12,6 +12,25 @@ pub enum SleepEvent {
     Resumed,
 }
 
+/// Decode the body of a logind PrepareForSleep signal message.
+///
+/// Returns `Some(going_to_sleep)` on a well-formed `(bool,)` body, or `None` if
+/// the body cannot be decoded (malformed or unexpected message shape). Emits a
+/// debug log in both the success and error cases; on error the stream continues
+/// rather than terminating.
+fn decode_prepare_for_sleep(msg: &zbus::Message) -> Option<bool> {
+    match msg.body().deserialize::<(bool,)>() {
+        Ok(body) => {
+            tracing::debug!("logind PrepareForSleep: {}", body.0);
+            Some(body.0)
+        }
+        Err(e) => {
+            tracing::debug!("logind message decode error: {}", e);
+            None
+        }
+    }
+}
+
 /// Returns an async stream that yields `SleepEvent::Resumed` when the system
 /// wakes from suspend, watching the `PrepareForSleep` signal on
 /// `org.freedesktop.login1.Manager`.
@@ -52,25 +71,78 @@ pub fn sleep_stream() -> Pin<Box<dyn Stream<Item = SleepEvent> + Send>> {
         let mut stream = zbus::MessageStream::from(&connection);
 
         use futures::StreamExt;
-        while let Some(Ok(msg)) = stream.next().await {
-            let header = msg.header();
-            if header.member().is_none_or(|m| m != "PrepareForSleep")
-                || header
-                    .interface()
-                    .is_none_or(|i| i != "org.freedesktop.login1.Manager")
-            {
-                continue;
-            }
+        while let Some(item) = stream.next().await {
+            match item {
+                Err(e) => {
+                    tracing::debug!("logind stream error: {}", e);
+                    continue;
+                }
+                Ok(msg) => {
+                    let header = msg.header();
+                    if header.member().is_none_or(|m| m != "PrepareForSleep")
+                        || header
+                            .interface()
+                            .is_none_or(|i| i != "org.freedesktop.login1.Manager")
+                    {
+                        continue;
+                    }
 
-            if let Ok(body) = msg.body().deserialize::<(bool,)>() {
-                let going_to_sleep = body.0;
-                tracing::debug!("logind PrepareForSleep: {}", going_to_sleep);
-
-                if !going_to_sleep {
-                    tracing::info!("System resumed from suspend");
-                    yield SleepEvent::Resumed;
+                    if let Some(going_to_sleep) = decode_prepare_for_sleep(&msg) {
+                        if !going_to_sleep {
+                            tracing::info!("System resumed from suspend");
+                            yield SleepEvent::Resumed;
+                        }
+                    }
                 }
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_prepare_for_sleep_returns_none_on_wrong_body_shape() {
+        // Build a signal message whose body is (u32,) -- wrong shape for (bool,).
+        // The D-Bus signature "u" does not match "b", so deserialize returns Err.
+        let msg = zbus::Message::signal(
+            "/org/freedesktop/login1",
+            "org.freedesktop.login1.Manager",
+            "PrepareForSleep",
+        )
+        .expect("valid signal builder")
+        .build(&(42u32,))
+        .expect("valid message build");
+
+        assert_eq!(decode_prepare_for_sleep(&msg), None);
+    }
+
+    #[test]
+    fn decode_prepare_for_sleep_returns_some_on_well_formed_body() {
+        // Build a signal message whose body is (bool,) -- the expected shape.
+        // true means going to sleep; false means resuming. Test both values.
+        let msg_sleep = zbus::Message::signal(
+            "/org/freedesktop/login1",
+            "org.freedesktop.login1.Manager",
+            "PrepareForSleep",
+        )
+        .expect("valid signal builder")
+        .build(&(true,))
+        .expect("valid message build");
+
+        assert_eq!(decode_prepare_for_sleep(&msg_sleep), Some(true));
+
+        let msg_resume = zbus::Message::signal(
+            "/org/freedesktop/login1",
+            "org.freedesktop.login1.Manager",
+            "PrepareForSleep",
+        )
+        .expect("valid signal builder")
+        .build(&(false,))
+        .expect("valid message build");
+
+        assert_eq!(decode_prepare_for_sleep(&msg_resume), Some(false));
+    }
 }

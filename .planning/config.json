@@ -1,0 +1,41 @@
+{
+  "mode": "interactive",
+  "granularity": "standard",
+  "parallelization": true,
+  "commit_docs": true,
+  "model_profile": "adaptive",
+  "review": {
+    "default_reviewers": [
+      "claude",
+      "codex",
+      "ollama"
+    ],
+    "ollama_host": "http://localhost:11434",
+    "models": {
+      "ollama": "qwen2.5-coder:14b"
+    },
+    "ollama_models": [
+      {
+        "host": "http://localhost:11434",
+        "model": "qwen2.5-coder:14b"
+      },
+      {
+        "host": "http://192.168.1.34:11434",
+        "model": "qwen2.5-coder:7b"
+      }
+    ],
+    "ollama_num_ctx": 32768
+  },
+  "workflow": {
+    "plan_review_convergence": true,
+    "plan_bounce": true,
+    "plan_bounce_script": "/home/john/.gsd/codex-plan-bounce.sh",
+    "research": false,
+    "plan_check": true,
+    "verifier": true,
+    "nyquist_validation": true
+  },
+  "plan_review": {
+    "source_grounding": true
+  }
+}
