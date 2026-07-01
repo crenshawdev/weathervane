@@ -97,6 +97,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-30 (resumed)
-Stopped at: Session resumed, proceeding to /gsd-execute-phase 2
-Resume file: .planning/phases/02-general-faults-pass/.continue-here.md
+Last session: 2026-07-01 (resumed)
+Stopped at: Session resumed — milestone v0.9 complete, awaiting /gsd-audit-milestone
+Resume file: .planning/HANDOFF.json (phase 02, status phase_complete_milestone_complete)
