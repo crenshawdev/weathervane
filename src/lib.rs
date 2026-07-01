@@ -11,6 +11,7 @@ mod air_quality_aqicn;
 mod client;
 mod geo;
 mod weather_jma;
+mod weather_nws;
 
 pub mod air_quality;
 pub mod alerts;

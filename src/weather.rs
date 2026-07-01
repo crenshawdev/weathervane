@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 use crate::client::http_client;
 use crate::codes::{CompassDirection, WeatherCondition};
 use crate::error::Result;
-use crate::geo::is_japan_bounds;
+use crate::geo::{is_japan_bounds, is_us_bounds};
 use crate::units::{MeasurementSystem, TemperatureUnit};
 use crate::weather_jma::override_current_temp;
+use crate::weather_nws::{override_current_observations, NwsObservation};
 
 /// Current weather conditions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +130,22 @@ pub async fn fetch_weather(
     } else {
         None
     };
+
+    // US: NWS full current-condition overlay, applied to the built WeatherData
+    // below. Mutually exclusive with the Japan path by geography (when this
+    // fires, jma_override is None, and vice-versa). Failures inside
+    // override_current_observations fall through to the Open-Meteo values.
+    let nws = if is_us_bounds(latitude, longitude) {
+        override_current_observations(latitude, longitude, temperature_unit, measurement_system)
+            .await
+    } else {
+        None
+    };
+
+    if nws.is_some() {
+        tracing::debug!("NWS override applied"); // coord-free (0.9.0 log posture)
+    }
+
     if let Some(t) = jma_override {
         tracing::debug!(
             "AMeDAS override: {} -> {} ({:?})",
@@ -144,9 +161,9 @@ pub async fn fetch_weather(
         jma_override,
     );
 
-    Ok(weather_from_open_meteo(data, current_temperature))
+    let weather = weather_from_open_meteo(data, current_temperature);
+    Ok(apply_nws_override(weather, nws.as_ref()))
 }
-
 /// Decides which current temperature to use: the AMeDAS override when the
 /// coordinates fall inside Japan and an override value was returned, or the
 /// raw Open-Meteo value otherwise. Lives in its own function so the override
@@ -233,6 +250,16 @@ fn weather_from_open_meteo(data: OpenMeteoResponse, current_temperature: f32) ->
         forecast,
         utc_offset_seconds: data.utc_offset_seconds,
     }
+}
+
+/// Overlays an optional NWS observation onto the already-built weather. Kept
+/// pure (no network) so the override step is fixture-testable, mirroring
+/// `resolve_current_temp` and `weather_from_open_meteo
+fn apply_nws_override(mut weather: WeatherData, nws: Option<&NwsObservation>) -> WeatherData {
+    if let Some(nws) = nws {
+        nws.apply_to(&mut weather.current);
+    }
+    weather
 }
 
 /// Open-Meteo API response structure.
@@ -500,6 +527,15 @@ mod tests {
         let result = weather_from_open_meteo(data, 60.0);
 
         assert_eq!(result.utc_offset_seconds, 0);
+    }
+
+    #[test]
+    fn apply_nws_override_none_leaves_weather_untouched() {
+        let data: OpenMeteoResponse = serde_json::from_str(CURRENT_FIELDS_FIXTURE).unwrap();
+        let weather = weather_from_open_meteo(data, 60.0);
+        let before = weather.current.temperature;
+        let out = apply_nws_override(weather, None);
+        assert_eq!(out.current.temperature, before); // None -> nothing mutated
     }
 
     #[test]

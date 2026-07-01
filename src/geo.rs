@@ -39,7 +39,7 @@ pub fn detect_region(lat: f64, lon: f64) -> Region {
 
 /// Checks if coordinates fall within US territory (continental US, Alaska, Hawaii).
 /// Excludes Canadian territory by respecting the US-Canada border.
-fn is_us_bounds(lat: f64, lon: f64) -> bool {
+pub(crate) fn is_us_bounds(lat: f64, lon: f64) -> bool {
     let alaska = (51.0..=72.0).contains(&lat) && (-180.0..=-129.0).contains(&lon);
     let hawaii = (18.0..=23.0).contains(&lat) && (-161.0..=-154.0).contains(&lon);
 
