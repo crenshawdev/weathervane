@@ -14,16 +14,15 @@ each commit, and the four CLAUDE.md contracts — no i18n, silent regional fallt
 no PII in errors/tracing, Linux-only streams degrade silently — hold across every code
 path.
 
-## Current Milestone: v0.9 TechDebt
+## Current State
 
-**Goal:** Eliminate token/URL leakage from logs and remove reachable panics from
-production code paths.
+**Shipped:** v0.9 TechDebt (2026-07-01) — eliminated token/URL leakage from logs
+and removed reachable panics from production code paths. 2 phases, 5 plans, 8
+requirements (SEC-01..05, FAULT-01..03), all satisfied and audited (8/8). CI gates
+green; wire contract unchanged.
 
-**Target features:**
-- Security audit: aqicn-token-safe logging, URL sanitization, input validation
-  for external API responses, panic-safe D-Bus deserialization
-- General faults pass: replace reachable `unwrap`/`partial_cmp` panics with safe
-  alternatives; add fixture context to test-helper unwraps
+**Next milestone:** not yet defined — run `/gsd-new-milestone`. Candidate work is
+the 18 deferred items in STATE.md (DEPS, TEST, API, PERF, RES categories).
 
 ## Requirements
 
@@ -42,15 +41,16 @@ production code paths.
 - ✓ Wire contract frozen in CONTRACT.md, enforced by insta snapshots — shipped
 - ✓ PII guard: error payloads omit query text and coordinates — enforced by tests
 - ✓ CI pipeline: fmt, clippy -D warnings, build, test, llvm-cov coverage — shipped
+- ✓ Security audit: aqicn-token/URL leakage stripped from logs, ip-api.com coordinate
+      validation, panic-safe D-Bus deserialization, URL PII-leak assertion in CI — v0.9
+- ✓ General faults pass: reachable JMA panics replaced with NaN-safe/observable paths;
+      test-helper unwraps carry fixture context — v0.9
 
 ### Active
 
 <!-- Current scope. Building toward these. -->
 
-- [ ] Security audit: token/URL leakage from logs, input validation for external
-      API responses, PII-safe error/tracing paths, panic-safe D-Bus deserialization
-- [ ] General faults pass: reachable panics in production code replaced with safe
-      alternatives; test-helper unwraps carry fixture context
+- (none — v0.9 shipped; next milestone not yet defined. See STATE.md Deferred Items.)
 
 ### Out of Scope
 
@@ -96,6 +96,9 @@ production code paths.
 | aqicn only outside Europe with explicit token | License terms (free-software/non-commercial) | ✓ Good |
 | English-only / no i18n | Crate scope; consumers own localization | ✓ Good |
 | `dev.jcrenshaw` namespace for new surfaces | Reverse-DNS of personal domain; retires vintagetechie | ✓ Good |
+| v0.9 narrowed to Security + General Faults (2 phases) | Prior 5-phase tech-debt draft too broad; ship a tight security/panic pass first | ✓ Good |
+| No wire-crossing serde shape changes in v0.9 | Keep `tests/wire_contract.rs` green without `cargo insta review` | ✓ Good |
+| SEC-02 log-line assertions in `src/client.rs` not `wire_contract.rs` | Security goal met at the leak site; accepted override (01-VERIFICATION.md) | ✓ Good |
 
 ## Evolution
 
@@ -115,4 +118,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-30 — Milestone v0.9 TechDebt started (narrow restart)*
+*Last updated: 2026-07-01 after v0.9 TechDebt milestone*
