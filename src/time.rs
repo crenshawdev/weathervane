@@ -181,4 +181,120 @@ mod tests {
             -5 * 3600
         ));
     }
+
+    // Group A — format_time branches: RFC3339 (military + 12h trim-zero), naive
+    // fallback (military + 12h), and unparseable-returns-input.
+
+    #[test]
+    fn format_time_rfc3339_military() {
+        assert_eq!(format_time("2025-01-20T06:30:45+09:00", true), "06:30");
+    }
+
+    #[test]
+    fn format_time_rfc3339_12h_trims_leading_zero() {
+        // format_chrono_time's 12-hour branch formats "06:30 AM" then
+        // trim_start_matches('0') strips the leading zero -> "6:30 AM".
+        assert_eq!(format_time("2025-01-20T06:30:00+09:00", false), "6:30 AM");
+    }
+
+    #[test]
+    fn format_time_naive_military() {
+        assert_eq!(format_time("2025-01-20T14:30:00", true), "14:30");
+    }
+
+    #[test]
+    fn format_time_naive_12h() {
+        assert_eq!(format_time("2025-01-20T14:30:00", false), "2:30 PM");
+    }
+
+    #[test]
+    fn format_time_unparseable_returns_input() {
+        assert_eq!(format_time("garbage", true), "garbage");
+        assert_eq!(format_time("2025-01-20", true), "2025-01-20");
+    }
+
+    // Group B — format_hour_minute AM/PM boundary arms, reached via format_time
+    // so the fallback path is exercised end-to-end.
+
+    #[test]
+    fn format_hour_minute_boundary_12_pm_and_pm_arm() {
+        // 12 -> (12, "PM")
+        assert_eq!(format_time("2025-01-20T12:00:00", false), "12:00 PM");
+        // _ -> (hour - 12, "PM")
+        assert_eq!(format_time("2025-01-20T13:15:00", false), "1:15 PM");
+        assert_eq!(format_time("2025-01-20T23:59:00", false), "11:59 PM");
+        // 0 -> (12, "AM"), widened to a non-zero minute.
+        assert_eq!(format_time("2025-01-20T00:15:00", false), "12:15 AM");
+    }
+
+    #[test]
+    fn format_hour_minute_military_passthrough_pads_zeros() {
+        assert_eq!(format_time("2025-01-20T05:07:00", true), "05:07");
+    }
+
+    // Group C — is_night_time unparseable-input fallback. Both cases pass
+    // unparseable sunrise/sunset so the `_ => !(6..18).contains(&hour)` arm
+    // runs; the offset is computed so the shifted local hour lands on a known
+    // day/night bucket regardless of the current wall-clock hour.
+
+    #[test]
+    fn is_night_time_unparseable_fallback_returns_false_in_day_bucket() {
+        use chrono::Timelike;
+        let now_utc_hour = chrono::Utc::now().naive_utc().hour() as i64;
+        let target_hour = 12i64;
+        let offset_hours = (target_hour - now_utc_hour).rem_euclid(24);
+        let offset_seconds = (offset_hours * 3600) as i32;
+        assert!(!is_night_time(
+            "garbage-no-T-separator",
+            "also-garbage",
+            offset_seconds
+        ));
+    }
+
+    #[test]
+    fn is_night_time_unparseable_fallback_returns_true_in_night_bucket() {
+        use chrono::Timelike;
+        let now_utc_hour = chrono::Utc::now().naive_utc().hour() as i64;
+        let target_hour = 22i64;
+        let offset_hours = (target_hour - now_utc_hour).rem_euclid(24);
+        let offset_seconds = (offset_hours * 3600) as i32;
+        assert!(is_night_time(
+            "garbage-no-T-separator",
+            "also-garbage",
+            offset_seconds
+        ));
+    }
+
+    #[test]
+    fn is_night_time_partial_parse_falls_through_to_fallback() {
+        use chrono::Timelike;
+        let now_utc_hour = chrono::Utc::now().naive_utc().hour() as i64;
+        let target_hour = 12i64;
+        let offset_hours = (target_hour - now_utc_hour).rem_euclid(24);
+        let day_offset_seconds = (offset_hours * 3600) as i32;
+        assert!(!is_night_time(
+            "2025-01-20T06:00:00",
+            "garbage-end",
+            day_offset_seconds
+        ));
+        assert!(!is_night_time(
+            "garbage-start",
+            "2025-01-20T18:00:00",
+            day_offset_seconds
+        ));
+    }
+
+    // Group D — format_hour unparseable-input fallback. "99:00" is NOT used
+    // because "99" parses as u32 successfully and reaches format_hour_minute
+    // instead of the terminal fallback.
+
+    #[test]
+    fn format_hour_unparseable_returns_input() {
+        assert_eq!(
+            format_hour("garbage-no-T-separator", true),
+            "garbage-no-T-separator"
+        );
+        assert_eq!(format_hour("2025-01-20Tabc", true), "2025-01-20Tabc");
+        assert_eq!(format_hour("2025-01-20T:00", true), "2025-01-20T:00");
+    }
 }

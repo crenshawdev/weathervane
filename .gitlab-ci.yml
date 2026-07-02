@@ -77,7 +77,7 @@ coverage:
     - mkdir -p target/llvm-cov-target
     - cargo llvm-cov --no-report --workspace
     - cargo llvm-cov report --cobertura --output-path target/llvm-cov-target/cobertura.xml
-    - cargo llvm-cov report --summary-only
+    - cargo llvm-cov report --summary-only --fail-under-lines 75
   coverage: '/TOTAL\s+(\d+\s+)+(\d+\.\d+\%)/'
   artifacts:
     reports:

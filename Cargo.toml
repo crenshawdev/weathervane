@@ -1,8 +1,8 @@
 [package]
 name = "weathervane"
-version = "0.8.0"
+version = "0.9.1"
 edition = "2021"
-authors = ["VintageTechie (John Crenshaw) <john@vintagetechie.com>"]
+authors = ["John Crenshaw <john@jcrenshaw.dev>"]
 license = "MIT OR Apache-2.0"
 description = "Weather data, air quality, and alerts from public APIs. Fetches, parses, and returns clean Rust types."
 repository = "https://gitlab.com/vintagetechie/weathervane"

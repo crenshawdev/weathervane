@@ -103,6 +103,12 @@ pub async fn detect_location() -> Result<DetectedLocation> {
     let response = http_client()?.get(url).send().await?.error_for_status()?;
     let data: IpApiResponse = response.json().await?;
 
+    detected_from_ip_api(data)
+}
+
+/// Lives in its own function so the IP-API success branch, coord-range guard, and
+/// display_name arm selection can be unit-tested against fixtures without a live network.
+fn detected_from_ip_api(data: IpApiResponse) -> Result<DetectedLocation> {
     if data.status == "success" {
         if let (Some(lat), Some(lon)) = (data.lat, data.lon) {
             // range-contains rejects NaN and infinity by IEEE 754 ordering
@@ -167,6 +173,215 @@ struct IpApiResponse {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn location_result_from_geocoding_with_admin_and_country() {
+        let result = GeocodingResult {
+            name: "Portland".to_string(),
+            latitude: 45.5152,
+            longitude: -122.6784,
+            country: Some("United States".to_string()),
+            admin1: Some("Oregon".to_string()),
+        };
+
+        let loc = LocationResult::from_geocoding_result(&result);
+
+        assert_eq!(loc.display_name, "Portland, Oregon, United States");
+        assert_eq!(loc.country, "United States");
+        assert_eq!(loc.latitude, 45.5152);
+        assert_eq!(loc.longitude, -122.6784);
+    }
+
+    #[test]
+    fn location_result_from_geocoding_without_admin_uses_two_part_display() {
+        let result = GeocodingResult {
+            name: "Portland".to_string(),
+            latitude: 45.5152,
+            longitude: -122.6784,
+            country: Some("United States".to_string()),
+            admin1: None,
+        };
+
+        let loc = LocationResult::from_geocoding_result(&result);
+
+        assert_eq!(loc.display_name, "Portland, United States");
+    }
+
+    #[test]
+    fn location_result_from_geocoding_without_country_uses_name_only() {
+        let result = GeocodingResult {
+            name: "Portland".to_string(),
+            latitude: 45.5152,
+            longitude: -122.6784,
+            country: None,
+            admin1: Some("Oregon".to_string()),
+        };
+
+        let loc = LocationResult::from_geocoding_result(&result);
+
+        assert_eq!(loc.display_name, "Portland");
+        assert_eq!(loc.country, "");
+    }
+
+    #[test]
+    fn location_result_from_geocoding_without_admin_or_country_uses_name_only() {
+        let result = GeocodingResult {
+            name: "Portland".to_string(),
+            latitude: 45.5152,
+            longitude: -122.6784,
+            country: None,
+            admin1: None,
+        };
+
+        let loc = LocationResult::from_geocoding_result(&result);
+
+        assert_eq!(loc.display_name, "Portland");
+        assert_eq!(loc.country, "");
+    }
+
+    #[test]
+    fn detected_from_ip_api_success_with_city_and_country() {
+        let data: IpApiResponse = serde_json::from_str(
+            r#"{"status": "success", "lat": 45.5152, "lon": -122.6784, "city": "Portland", "regionName": "Oregon", "country": "United States"}"#,
+        )
+        .unwrap();
+
+        let loc = detected_from_ip_api(data).unwrap();
+
+        assert_eq!(loc.display_name, "Portland, United States");
+        assert_eq!(loc.country, "United States");
+        assert_eq!(loc.latitude, 45.5152);
+        assert_eq!(loc.longitude, -122.6784);
+    }
+
+    #[test]
+    fn detected_from_ip_api_success_without_city_uses_region_and_country() {
+        let data: IpApiResponse = serde_json::from_str(
+            r#"{"status": "success", "lat": 45.5152, "lon": -122.6784, "city": null, "regionName": "Oregon", "country": "United States"}"#,
+        )
+        .unwrap();
+
+        let loc = detected_from_ip_api(data).unwrap();
+
+        assert_eq!(loc.display_name, "Oregon, United States");
+    }
+
+    #[test]
+    fn detected_from_ip_api_success_with_only_country_uses_country_alone() {
+        let data: IpApiResponse = serde_json::from_str(
+            r#"{"status": "success", "lat": 45.5152, "lon": -122.6784, "city": null, "regionName": null, "country": "United States"}"#,
+        )
+        .unwrap();
+
+        let loc = detected_from_ip_api(data).unwrap();
+
+        assert_eq!(loc.display_name, "United States");
+    }
+
+    #[test]
+    fn detected_from_ip_api_success_with_no_names_falls_back_to_unknown() {
+        let data: IpApiResponse = serde_json::from_str(
+            r#"{"status": "success", "lat": 45.5, "lon": -122.5, "city": null, "regionName": null, "country": null}"#,
+        )
+        .unwrap();
+
+        let loc = detected_from_ip_api(data).unwrap();
+
+        assert_eq!(loc.display_name, "Unknown");
+        assert_eq!(loc.country, "");
+    }
+
+    #[test]
+    fn detected_from_ip_api_returns_location_detection_error_when_status_fail() {
+        let data: IpApiResponse = serde_json::from_str(
+            r#"{"status": "fail", "lat": 45.5, "lon": -122.5, "city": null, "regionName": null, "country": null}"#,
+        )
+        .unwrap();
+
+        let result = detected_from_ip_api(data);
+
+        assert!(matches!(result, Err(Error::LocationDetection)));
+    }
+
+    #[test]
+    fn detected_from_ip_api_returns_location_detection_error_when_lat_missing() {
+        let data: IpApiResponse = serde_json::from_str(
+            r#"{"status": "success", "lat": null, "lon": -122.5, "city": null, "regionName": null, "country": null}"#,
+        )
+        .unwrap();
+
+        let result = detected_from_ip_api(data);
+
+        assert!(matches!(result, Err(Error::LocationDetection)));
+    }
+
+    #[test]
+    fn detected_from_ip_api_returns_location_detection_error_when_lat_out_of_range() {
+        let data: IpApiResponse = serde_json::from_str(
+            r#"{"status": "success", "lat": 91.0, "lon": 0.0, "city": null, "regionName": null, "country": null}"#,
+        )
+        .unwrap();
+
+        let result = detected_from_ip_api(data);
+
+        assert!(matches!(result, Err(Error::LocationDetection)));
+    }
+
+    #[test]
+    fn saved_location_matches_within_window() {
+        let s = SavedLocation {
+            name: "Home".to_string(),
+            latitude: 45.5152,
+            longitude: -122.6784,
+        };
+
+        assert!(s.matches_coords(45.5152, -122.6784));
+        assert!(s.matches_coords(45.5200, -122.6800));
+    }
+
+    #[test]
+    fn saved_location_does_not_match_outside_window_lat() {
+        let s = SavedLocation {
+            name: "Home".to_string(),
+            latitude: 45.5152,
+            longitude: -122.6784,
+        };
+
+        assert!(!s.matches_coords(45.53, -122.6784));
+    }
+
+    #[test]
+    fn saved_location_does_not_match_outside_window_lon() {
+        let s = SavedLocation {
+            name: "Home".to_string(),
+            latitude: 45.5152,
+            longitude: -122.6784,
+        };
+
+        assert!(!s.matches_coords(45.5152, -122.66));
+    }
+
+    #[test]
+    fn uses_imperial_units_returns_true_for_imperial_countries() {
+        assert!(uses_imperial_units("United States"));
+        assert!(uses_imperial_units("Liberia"));
+        assert!(uses_imperial_units("Myanmar"));
+    }
+
+    #[test]
+    fn uses_imperial_units_returns_false_for_metric_countries() {
+        assert!(!uses_imperial_units("United Kingdom"));
+        assert!(!uses_imperial_units("Canada"));
+        assert!(!uses_imperial_units("Germany"));
+        assert!(!uses_imperial_units("Japan"));
+    }
+
+    #[test]
+    fn uses_imperial_units_returns_false_for_empty_string() {
+        assert!(!uses_imperial_units(""));
+    }
+
     /// Pins the IEEE 754 semantics detect_location() depends on (D-05, D-06).
     ///
     /// `RangeInclusive::contains` on `f64` uses `PartialOrd`, which returns `false`
