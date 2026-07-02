@@ -499,4 +499,145 @@ mod tests {
         // so it exercises the empty-match fallback to CWTO.
         assert_eq!(get_eccc_office_codes(58.0, -70.0), vec!["CWTO"]);
     }
+
+    #[test]
+    fn get_meteoalarm_info_maps_representative_countries() {
+        assert_eq!(get_meteoalarm_info("Austria"), Some(("austria", "AT")));
+        assert_eq!(get_meteoalarm_info("Belgium"), Some(("belgium", "BE")));
+        assert_eq!(
+            get_meteoalarm_info("Bosnia and Herzegovina"),
+            Some(("bosnia-herzegovina", "BA"))
+        );
+        assert_eq!(get_meteoalarm_info("Bulgaria"), Some(("bulgaria", "BG")));
+        assert_eq!(get_meteoalarm_info("Croatia"), Some(("croatia", "HR")));
+        assert_eq!(get_meteoalarm_info("Cyprus"), Some(("cyprus", "CY")));
+        assert_eq!(get_meteoalarm_info("Denmark"), Some(("denmark", "DK")));
+        assert_eq!(get_meteoalarm_info("Estonia"), Some(("estonia", "EE")));
+        assert_eq!(get_meteoalarm_info("Finland"), Some(("finland", "FI")));
+        assert_eq!(get_meteoalarm_info("France"), Some(("france", "FR")));
+        assert_eq!(get_meteoalarm_info("Germany"), Some(("germany", "DE")));
+        assert_eq!(get_meteoalarm_info("Greece"), Some(("greece", "GR")));
+        assert_eq!(get_meteoalarm_info("Hungary"), Some(("hungary", "HU")));
+        assert_eq!(get_meteoalarm_info("Iceland"), Some(("iceland", "IS")));
+        assert_eq!(get_meteoalarm_info("Ireland"), Some(("ireland", "IE")));
+        assert_eq!(get_meteoalarm_info("Israel"), Some(("israel", "IL")));
+        assert_eq!(get_meteoalarm_info("Italy"), Some(("italy", "IT")));
+        assert_eq!(get_meteoalarm_info("Latvia"), Some(("latvia", "LV")));
+        assert_eq!(get_meteoalarm_info("Lithuania"), Some(("lithuania", "LT")));
+        assert_eq!(
+            get_meteoalarm_info("Luxembourg"),
+            Some(("luxembourg", "LU"))
+        );
+        assert_eq!(get_meteoalarm_info("Malta"), Some(("malta", "MT")));
+        assert_eq!(get_meteoalarm_info("Moldova"), Some(("moldova", "MD")));
+        assert_eq!(
+            get_meteoalarm_info("Montenegro"),
+            Some(("montenegro", "ME"))
+        );
+        assert_eq!(
+            get_meteoalarm_info("Netherlands"),
+            Some(("netherlands", "NL"))
+        );
+        assert_eq!(get_meteoalarm_info("Norway"), Some(("norway", "NO")));
+        assert_eq!(get_meteoalarm_info("Poland"), Some(("poland", "PL")));
+        assert_eq!(get_meteoalarm_info("Portugal"), Some(("portugal", "PT")));
+        assert_eq!(get_meteoalarm_info("Romania"), Some(("romania", "RO")));
+        assert_eq!(get_meteoalarm_info("Serbia"), Some(("serbia", "RS")));
+        assert_eq!(get_meteoalarm_info("Slovakia"), Some(("slovakia", "SK")));
+        assert_eq!(get_meteoalarm_info("Slovenia"), Some(("slovenia", "SI")));
+        assert_eq!(get_meteoalarm_info("Spain"), Some(("spain", "ES")));
+        assert_eq!(get_meteoalarm_info("Sweden"), Some(("sweden", "SE")));
+        assert_eq!(
+            get_meteoalarm_info("Switzerland"),
+            Some(("switzerland", "CH"))
+        );
+    }
+
+    #[test]
+    fn get_meteoalarm_info_case_insensitive() {
+        // Proves the .to_lowercase() normalization at the top of the match.
+        assert_eq!(get_meteoalarm_info("france"), Some(("france", "FR")));
+        assert_eq!(get_meteoalarm_info("FRANCE"), Some(("france", "FR")));
+        assert_eq!(get_meteoalarm_info("FrAnCe"), Some(("france", "FR")));
+    }
+
+    #[test]
+    fn get_meteoalarm_info_alias_arms() {
+        // Both sides of each alias pair must map to the same (slug, ISO) tuple.
+        assert_eq!(
+            get_meteoalarm_info("czech republic"),
+            Some(("czechia", "CZ"))
+        );
+        assert_eq!(get_meteoalarm_info("czechia"), Some(("czechia", "CZ")));
+
+        assert_eq!(
+            get_meteoalarm_info("north macedonia"),
+            Some(("north-macedonia", "MK"))
+        );
+        assert_eq!(
+            get_meteoalarm_info("macedonia"),
+            Some(("north-macedonia", "MK"))
+        );
+
+        assert_eq!(
+            get_meteoalarm_info("united kingdom"),
+            Some(("united-kingdom", "UK"))
+        );
+        assert_eq!(get_meteoalarm_info("uk"), Some(("united-kingdom", "UK")));
+    }
+
+    #[test]
+    fn get_meteoalarm_info_unknown_returns_none() {
+        // Proves the `_ => None` fallback for non-covered countries.
+        assert_eq!(get_meteoalarm_info("United States"), None);
+        assert_eq!(get_meteoalarm_info("Japan"), None);
+        assert_eq!(get_meteoalarm_info(""), None);
+        assert_eq!(get_meteoalarm_info("not-a-country"), None);
+    }
+
+    #[test]
+    fn approximate_european_country_maps_bounding_boxes() {
+        // These coordinates assert the CURRENT branch-order cascade at
+        // approximate_european_country (Germany -> France -> Spain -> Italy ->
+        // UK -> Netherlands -> Belgium -> Switzerland -> Austria -> Poland),
+        // not real-world geography. Brussels (50.85, 4.35) actually falls into
+        // the France branch first, and Zurich (47.38, 8.55) actually falls into
+        // the Germany branch first, so Belgium and Switzerland use branch-order-
+        // safe in-box points instead of their real capital-city coordinates.
+        assert_eq!(approximate_european_country(52.5, 13.4), "Germany"); // Berlin
+        assert_eq!(approximate_european_country(48.85, 2.35), "France"); // Paris
+        assert_eq!(approximate_european_country(40.42, -3.70), "Spain"); // Madrid
+        assert_eq!(approximate_european_country(41.90, 12.50), "Italy"); // Rome
+        assert_eq!(approximate_european_country(51.51, -0.13), "United Kingdom"); // London
+        assert_eq!(approximate_european_country(52.37, 4.89), "Netherlands"); // Amsterdam
+        assert_eq!(approximate_european_country(51.20, 3.20), "Belgium"); // branch-order-safe point
+        assert_eq!(approximate_european_country(47.20, 10.00), "Switzerland"); // branch-order-safe point
+        assert_eq!(approximate_european_country(48.21, 16.37), "Austria"); // Vienna
+        assert_eq!(approximate_european_country(52.23, 21.01), "Poland"); // Warsaw
+    }
+
+    #[test]
+    fn approximate_european_country_nordic_sub_branches() {
+        // Nordic outer box (55.0..=69.1, 4.5..=31.1) has three lon sub-branches.
+        assert_eq!(approximate_european_country(59.91, 5.32), "Norway"); // lon < 10
+        assert_eq!(approximate_european_country(59.33, 18.06), "Sweden"); // 10 <= lon < 24.2
+        assert_eq!(approximate_european_country(60.17, 24.94), "Finland"); // lon >= 24.2
+    }
+
+    #[test]
+    fn approximate_european_country_unknown_outside_boxes() {
+        assert_eq!(approximate_european_country(0.0, 0.0), "Unknown"); // Gulf of Guinea
+        assert_eq!(approximate_european_country(-33.87, 151.21), "Unknown"); // Sydney
+        assert_eq!(approximate_european_country(35.68, 139.65), "Unknown"); // Tokyo
+    }
+
+    #[test]
+    fn detect_region_us_upper_midwest_and_maine_bands() {
+        // Upper Midwest band: -95.0..-84.0 lon, lat < 46.5.
+        assert_eq!(detect_region(44.98, -93.27), Region::Us, "Minneapolis, MN");
+        // Northeast band (-76.0..-67.0), kept for band-parity with existing tests.
+        assert_eq!(detect_region(44.30, -69.78), Region::Us, "Augusta, ME");
+        // Maine else-arm band: lon -67.0..-66.0.
+        assert_eq!(detect_region(45.20, -66.50), Region::Us, "Eastport, ME");
+    }
 }

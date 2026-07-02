@@ -203,4 +203,212 @@ mod tests {
         assert_eq!(WeatherCondition::from_code(100), WeatherCondition::Unknown);
         assert_eq!(WeatherCondition::from_code(-1), WeatherCondition::Unknown);
     }
+
+    #[test]
+    fn weather_code_maps_remaining_wmo_arms() {
+        assert_eq!(
+            WeatherCondition::from_code(1),
+            WeatherCondition::MainlyClear
+        );
+        assert_eq!(WeatherCondition::from_code(3), WeatherCondition::Overcast);
+        assert_eq!(WeatherCondition::from_code(51), WeatherCondition::Drizzle);
+        assert_eq!(WeatherCondition::from_code(53), WeatherCondition::Drizzle);
+        assert_eq!(WeatherCondition::from_code(55), WeatherCondition::Drizzle);
+        assert_eq!(
+            WeatherCondition::from_code(56),
+            WeatherCondition::FreezingDrizzle
+        );
+        assert_eq!(
+            WeatherCondition::from_code(57),
+            WeatherCondition::FreezingDrizzle
+        );
+        assert_eq!(WeatherCondition::from_code(63), WeatherCondition::Rain);
+        assert_eq!(WeatherCondition::from_code(65), WeatherCondition::Rain);
+        assert_eq!(
+            WeatherCondition::from_code(66),
+            WeatherCondition::FreezingRain
+        );
+        assert_eq!(
+            WeatherCondition::from_code(67),
+            WeatherCondition::FreezingRain
+        );
+        assert_eq!(WeatherCondition::from_code(73), WeatherCondition::Snow);
+        assert_eq!(WeatherCondition::from_code(75), WeatherCondition::Snow);
+        assert_eq!(
+            WeatherCondition::from_code(77),
+            WeatherCondition::SnowGrains
+        );
+        assert_eq!(
+            WeatherCondition::from_code(80),
+            WeatherCondition::RainShowers
+        );
+        assert_eq!(
+            WeatherCondition::from_code(82),
+            WeatherCondition::RainShowers
+        );
+        assert_eq!(
+            WeatherCondition::from_code(85),
+            WeatherCondition::SnowShowers
+        );
+        assert_eq!(
+            WeatherCondition::from_code(86),
+            WeatherCondition::SnowShowers
+        );
+        assert_eq!(
+            WeatherCondition::from_code(96),
+            WeatherCondition::ThunderstormHail
+        );
+    }
+
+    #[test]
+    fn icon_name_clear_sky_day() {
+        assert_eq!(
+            WeatherCondition::ClearSky.icon_name(false),
+            "weather-clear-symbolic"
+        );
+    }
+
+    #[test]
+    fn icon_name_clear_sky_night() {
+        assert_eq!(
+            WeatherCondition::ClearSky.icon_name(true),
+            "weather-clear-night-symbolic"
+        );
+    }
+
+    #[test]
+    fn icon_name_mainly_clear_day() {
+        assert_eq!(
+            WeatherCondition::MainlyClear.icon_name(false),
+            "weather-few-clouds-symbolic"
+        );
+    }
+
+    #[test]
+    fn icon_name_mainly_clear_night() {
+        assert_eq!(
+            WeatherCondition::MainlyClear.icon_name(true),
+            "weather-few-clouds-night-symbolic"
+        );
+    }
+
+    #[test]
+    fn icon_name_partly_cloudy_day() {
+        assert_eq!(
+            WeatherCondition::PartlyCloudy.icon_name(false),
+            "weather-few-clouds-symbolic"
+        );
+    }
+
+    #[test]
+    fn icon_name_partly_cloudy_night() {
+        assert_eq!(
+            WeatherCondition::PartlyCloudy.icon_name(true),
+            "weather-few-clouds-night-symbolic"
+        );
+    }
+
+    #[test]
+    fn icon_name_overcast() {
+        assert_eq!(
+            WeatherCondition::Overcast.icon_name(false),
+            "weather-overcast-symbolic"
+        );
+    }
+
+    #[test]
+    fn icon_name_foggy() {
+        assert_eq!(
+            WeatherCondition::Foggy.icon_name(false),
+            "weather-fog-symbolic"
+        );
+    }
+
+    #[test]
+    fn icon_name_drizzle_and_freezing_drizzle_share_symbol() {
+        assert_eq!(
+            WeatherCondition::Drizzle.icon_name(false),
+            "weather-showers-scattered-symbolic"
+        );
+        assert_eq!(
+            WeatherCondition::FreezingDrizzle.icon_name(false),
+            "weather-showers-scattered-symbolic"
+        );
+    }
+
+    #[test]
+    fn icon_name_rain_family_shares_symbol() {
+        assert_eq!(
+            WeatherCondition::Rain.icon_name(false),
+            "weather-showers-symbolic"
+        );
+        assert_eq!(
+            WeatherCondition::FreezingRain.icon_name(false),
+            "weather-showers-symbolic"
+        );
+        assert_eq!(
+            WeatherCondition::RainShowers.icon_name(false),
+            "weather-showers-symbolic"
+        );
+    }
+
+    #[test]
+    fn icon_name_snow_family_shares_symbol() {
+        assert_eq!(
+            WeatherCondition::Snow.icon_name(false),
+            "weather-snow-symbolic"
+        );
+        assert_eq!(
+            WeatherCondition::SnowGrains.icon_name(false),
+            "weather-snow-symbolic"
+        );
+        assert_eq!(
+            WeatherCondition::SnowShowers.icon_name(false),
+            "weather-snow-symbolic"
+        );
+    }
+
+    #[test]
+    fn icon_name_thunderstorm_family_shares_symbol() {
+        assert_eq!(
+            WeatherCondition::Thunderstorm.icon_name(false),
+            "weather-storm-symbolic"
+        );
+        assert_eq!(
+            WeatherCondition::ThunderstormHail.icon_name(false),
+            "weather-storm-symbolic"
+        );
+    }
+
+    #[test]
+    fn icon_name_unknown_returns_severe_alert() {
+        assert_eq!(
+            WeatherCondition::Unknown.icon_name(false),
+            "weather-severe-alert-symbolic"
+        );
+    }
+
+    #[test]
+    fn compass_direction_as_str_matches_labels() {
+        assert_eq!(CompassDirection::N.as_str(), "N");
+        assert_eq!(CompassDirection::NE.as_str(), "NE");
+        assert_eq!(CompassDirection::E.as_str(), "E");
+        assert_eq!(CompassDirection::SE.as_str(), "SE");
+        assert_eq!(CompassDirection::S.as_str(), "S");
+        assert_eq!(CompassDirection::SW.as_str(), "SW");
+        assert_eq!(CompassDirection::W.as_str(), "W");
+        assert_eq!(CompassDirection::NW.as_str(), "NW");
+    }
+
+    #[test]
+    fn compass_direction_from_degrees_interior_arcs() {
+        assert_eq!(CompassDirection::from_degrees(0), CompassDirection::N);
+        assert_eq!(CompassDirection::from_degrees(45), CompassDirection::NE);
+        assert_eq!(CompassDirection::from_degrees(90), CompassDirection::E);
+        assert_eq!(CompassDirection::from_degrees(135), CompassDirection::SE);
+        assert_eq!(CompassDirection::from_degrees(180), CompassDirection::S);
+        assert_eq!(CompassDirection::from_degrees(225), CompassDirection::SW);
+        assert_eq!(CompassDirection::from_degrees(270), CompassDirection::W);
+        assert_eq!(CompassDirection::from_degrees(315), CompassDirection::NW);
+    }
 }

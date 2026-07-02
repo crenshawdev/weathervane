@@ -69,6 +69,18 @@ pub(crate) async fn override_current_temp(
     let timestamp = latest_observation_time().await?;
     let map = fetch_map(&timestamp).await?;
 
+    select_temp_from_map(&candidates, &map, unit)
+}
+
+/// Walks the nearest-station candidates (within `MAX_HOPS`) looking for the
+/// first one with a valid temperature reading in `map`. Lives in its own
+/// function so it can be unit-tested against fixture HashMaps without an
+/// async runtime or a live JMA fetch.
+fn select_temp_from_map(
+    candidates: &[(f64, Station)],
+    map: &HashMap<String, RawObservation>,
+    unit: TemperatureUnit,
+) -> Option<f32> {
     for (_, station) in candidates.iter().take(MAX_HOPS) {
         if let Some(obs) = map.get(&station.code) {
             if let Some(temp) = obs.temp.as_ref() {
@@ -375,5 +387,285 @@ mod tests {
 
         assert_eq!(stations.len(), 1);
         assert_eq!(stations[0].code, "well_formed");
+    }
+
+    #[test]
+    fn select_temp_from_map_returns_first_valid_temp() {
+        let candidates = vec![(
+            5.0,
+            Station {
+                code: "tokyo".into(),
+                lat: 35.68,
+                lon: 139.65,
+            },
+        )];
+        let map = HashMap::from([(
+            "tokyo".to_string(),
+            RawObservation {
+                temp: Some(vec![18.5, 0.0]),
+            },
+        )]);
+
+        let result = select_temp_from_map(&candidates, &map, TemperatureUnit::Celsius);
+
+        assert_eq!(result, Some(18.5));
+    }
+
+    #[test]
+    fn select_temp_from_map_skips_invalid_flag_and_tries_next() {
+        let candidates = vec![
+            (
+                4.0,
+                Station {
+                    code: "sapporo".into(),
+                    lat: 43.07,
+                    lon: 141.35,
+                },
+            ),
+            (
+                5.0,
+                Station {
+                    code: "tokyo".into(),
+                    lat: 35.68,
+                    lon: 139.65,
+                },
+            ),
+        ];
+        let map = HashMap::from([
+            (
+                "sapporo".to_string(),
+                RawObservation {
+                    temp: Some(vec![10.0, 1.0]),
+                },
+            ),
+            (
+                "tokyo".to_string(),
+                RawObservation {
+                    temp: Some(vec![18.5, 0.0]),
+                },
+            ),
+        ]);
+
+        let result = select_temp_from_map(&candidates, &map, TemperatureUnit::Celsius);
+
+        assert_eq!(result, Some(18.5));
+    }
+
+    #[test]
+    fn select_temp_from_map_skips_missing_temp_and_tries_next() {
+        let candidates = vec![
+            (
+                4.0,
+                Station {
+                    code: "osaka".into(),
+                    lat: 34.69,
+                    lon: 135.50,
+                },
+            ),
+            (
+                5.0,
+                Station {
+                    code: "tokyo".into(),
+                    lat: 35.68,
+                    lon: 139.65,
+                },
+            ),
+        ];
+        let map = HashMap::from([
+            ("osaka".to_string(), RawObservation { temp: None }),
+            (
+                "tokyo".to_string(),
+                RawObservation {
+                    temp: Some(vec![18.5, 0.0]),
+                },
+            ),
+        ]);
+
+        let result = select_temp_from_map(&candidates, &map, TemperatureUnit::Celsius);
+
+        assert_eq!(result, Some(18.5));
+    }
+
+    #[test]
+    fn select_temp_from_map_skips_temp_wrong_length_and_tries_next() {
+        let candidates = vec![
+            (
+                4.0,
+                Station {
+                    code: "osaka".into(),
+                    lat: 34.69,
+                    lon: 135.50,
+                },
+            ),
+            (
+                5.0,
+                Station {
+                    code: "tokyo".into(),
+                    lat: 35.68,
+                    lon: 139.65,
+                },
+            ),
+        ];
+        let map = HashMap::from([
+            (
+                "osaka".to_string(),
+                RawObservation {
+                    temp: Some(vec![18.5]),
+                },
+            ),
+            (
+                "tokyo".to_string(),
+                RawObservation {
+                    temp: Some(vec![18.5, 0.0]),
+                },
+            ),
+        ]);
+
+        let result = select_temp_from_map(&candidates, &map, TemperatureUnit::Celsius);
+
+        assert_eq!(result, Some(18.5));
+    }
+
+    #[test]
+    fn select_temp_from_map_returns_none_when_no_valid_temp() {
+        let candidates = vec![(
+            5.0,
+            Station {
+                code: "tokyo".into(),
+                lat: 35.68,
+                lon: 139.65,
+            },
+        )];
+        let map = HashMap::from([(
+            "tokyo".to_string(),
+            RawObservation {
+                temp: Some(vec![10.0, 1.0]),
+            },
+        )]);
+
+        let result = select_temp_from_map(&candidates, &map, TemperatureUnit::Celsius);
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn select_temp_from_map_respects_max_hops() {
+        // MAX_HOPS is 3 (src/weather_jma.rs), so only indices 0, 1, 2 are
+        // inspected. s3 carries the only valid temperature but sits at
+        // index 3, beyond the window, so the loop must fall through to
+        // None. An off-by-one bug that iterated take(MAX_HOPS + 1) would
+        // return Some(18.5) here and fail this test.
+        let candidates = vec![
+            (
+                1.0,
+                Station {
+                    code: "s0".into(),
+                    lat: 35.0,
+                    lon: 139.0,
+                },
+            ),
+            (
+                2.0,
+                Station {
+                    code: "s1".into(),
+                    lat: 35.1,
+                    lon: 139.1,
+                },
+            ),
+            (
+                3.0,
+                Station {
+                    code: "s2".into(),
+                    lat: 35.2,
+                    lon: 139.2,
+                },
+            ),
+            (
+                4.0,
+                Station {
+                    code: "s3".into(),
+                    lat: 35.3,
+                    lon: 139.3,
+                },
+            ),
+        ];
+        let map = HashMap::from([
+            ("s0".to_string(), RawObservation { temp: None }),
+            (
+                "s1".to_string(),
+                RawObservation {
+                    temp: Some(vec![1.0]),
+                },
+            ),
+            (
+                "s2".to_string(),
+                RawObservation {
+                    temp: Some(vec![1.0, 1.0]),
+                },
+            ),
+            (
+                "s3".to_string(),
+                RawObservation {
+                    temp: Some(vec![18.5, 0.0]),
+                },
+            ),
+        ]);
+
+        let result = select_temp_from_map(&candidates, &map, TemperatureUnit::Celsius);
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn select_temp_from_map_converts_to_fahrenheit() {
+        let candidates = vec![(
+            5.0,
+            Station {
+                code: "tokyo".into(),
+                lat: 35.68,
+                lon: 139.65,
+            },
+        )];
+        let map = HashMap::from([(
+            "tokyo".to_string(),
+            RawObservation {
+                temp: Some(vec![0.0, 0.0]),
+            },
+        )]);
+
+        let result = select_temp_from_map(&candidates, &map, TemperatureUnit::Fahrenheit);
+
+        let f = result.expect("expected Some(temp)");
+        assert!((f - 32.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn select_temp_from_map_returns_none_on_empty_candidates() {
+        let candidates: Vec<(f64, Station)> = vec![];
+        let map: HashMap<String, RawObservation> = HashMap::new();
+
+        let result = select_temp_from_map(&candidates, &map, TemperatureUnit::Celsius);
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn station_non_temp_capable_is_dropped_silently() {
+        let non_temp = RawStation {
+            lat: vec![35.0, 41.0],
+            lon: vec![139.0, 45.0],
+            elems: "00000000".to_string(),
+        };
+        let temp_capable = RawStation {
+            lat: vec![35.0, 41.0],
+            lon: vec![139.0, 45.0],
+            elems: "10000000".to_string(),
+        };
+
+        assert!(parse_station_entry("tokyo_non_temp".to_string(), non_temp).is_none());
+
+        let control = parse_station_entry("tokyo_temp".to_string(), temp_capable);
+        assert!(control.is_some());
+        assert_eq!(control.unwrap().code, "tokyo_temp");
     }
 }

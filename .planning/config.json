@@ -7,33 +7,23 @@
   "review": {
     "default_reviewers": [
       "claude",
-      "codex",
-      "ollama"
+      "codex"
     ],
-    "ollama_host": "http://localhost:11434",
     "models": {
-      "ollama": "qwen2.5-coder:14b"
-    },
-    "ollama_models": [
-      {
-        "host": "http://localhost:11434",
-        "model": "qwen2.5-coder:14b"
-      },
-      {
-        "host": "http://192.168.1.34:11434",
-        "model": "qwen2.5-coder:7b"
-      }
-    ],
-    "ollama_num_ctx": 32768
+      "codex": "gpt-5.4-mini"
+    }
   },
   "workflow": {
     "plan_review_convergence": true,
-    "plan_bounce": true,
-    "plan_bounce_script": "/home/john/.gsd/codex-plan-bounce.sh",
-    "research": false,
+    "plan_bounce": false,
+    "plan_bounce_script": null,
+    "research": true,
     "plan_check": true,
     "verifier": true,
-    "nyquist_validation": true
+    "nyquist_validation": true,
+    "code_review": true,
+    "code_review_depth": "deep",
+    "_auto_chain_active": false
   },
   "plan_review": {
     "source_grounding": true

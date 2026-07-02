@@ -182,33 +182,7 @@ pub async fn fetch_air_quality(
         _ => None,
     };
 
-    let (aqi, category, aqi_source) = if let Some(val) = aqicn_aqi {
-        (
-            val,
-            AqiCategory::Us(UsAqiCategory::from_aqi(val)),
-            AqiSource::Aqicn,
-        )
-    } else if region == Region::Europe {
-        let val = data.current.european_aqi.unwrap_or_else(|| {
-            tracing::warn!("European AQI missing from API response, defaulting to 0");
-            0
-        });
-        (
-            val,
-            AqiCategory::Eu(EuAqiCategory::from_aqi(val)),
-            AqiSource::OpenMeteo,
-        )
-    } else {
-        let val = data.current.us_aqi.unwrap_or_else(|| {
-            tracing::warn!("US AQI missing from API response, defaulting to 0");
-            0
-        });
-        (
-            val,
-            AqiCategory::Us(UsAqiCategory::from_aqi(val)),
-            AqiSource::OpenMeteo,
-        )
-    };
+    let (aqi, category, aqi_source) = resolve_headline_aqi(&data, region, aqicn_aqi);
 
     Ok(AirQualityData {
         aqi,
@@ -220,6 +194,44 @@ pub async fn fetch_air_quality(
         carbon_monoxide: data.current.carbon_monoxide.unwrap_or(0.0),
         aqi_source,
     })
+}
+
+/// Resolves the headline `(aqi, category, aqi_source)` tuple: aqicn (US scale)
+/// when present, else Open-Meteo on the region-appropriate scale. Lives in its
+/// own function so the headline-AQI resolution can be unit-tested without a
+/// live network.
+fn resolve_headline_aqi(
+    response: &AirQualityResponse,
+    region: Region,
+    aqicn_aqi: Option<i32>,
+) -> (i32, AqiCategory, AqiSource) {
+    if let Some(val) = aqicn_aqi {
+        (
+            val,
+            AqiCategory::Us(UsAqiCategory::from_aqi(val)),
+            AqiSource::Aqicn,
+        )
+    } else if region == Region::Europe {
+        let val = response.current.european_aqi.unwrap_or_else(|| {
+            tracing::warn!("European AQI missing from API response, defaulting to 0");
+            0
+        });
+        (
+            val,
+            AqiCategory::Eu(EuAqiCategory::from_aqi(val)),
+            AqiSource::OpenMeteo,
+        )
+    } else {
+        let val = response.current.us_aqi.unwrap_or_else(|| {
+            tracing::warn!("US AQI missing from API response, defaulting to 0");
+            0
+        });
+        (
+            val,
+            AqiCategory::Us(UsAqiCategory::from_aqi(val)),
+            AqiSource::OpenMeteo,
+        )
+    }
 }
 
 /// Open-Meteo Air Quality API response.
@@ -246,5 +258,242 @@ mod tests {
     #[test]
     fn aqi_source_defaults_to_open_meteo() {
         assert_eq!(AqiSource::default(), AqiSource::OpenMeteo);
+    }
+
+    // --- resolve_headline_aqi branches ---
+
+    #[test]
+    fn resolve_headline_aqi_us_region_with_aqicn_returns_aqicn() {
+        let json = r#"{"current": {"us_aqi": 42, "european_aqi": null, "pm2_5": null,
+            "pm10": null, "ozone": null, "nitrogen_dioxide": null, "carbon_monoxide": null}}"#;
+        let data: AirQualityResponse = serde_json::from_str(json).unwrap();
+        let result = resolve_headline_aqi(&data, Region::Us, Some(88));
+        assert_eq!(
+            result,
+            (
+                88,
+                AqiCategory::Us(UsAqiCategory::Moderate),
+                AqiSource::Aqicn
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_headline_aqi_us_region_without_aqicn_returns_open_meteo_us() {
+        let json = r#"{"current": {"us_aqi": 42, "european_aqi": null, "pm2_5": null,
+            "pm10": null, "ozone": null, "nitrogen_dioxide": null, "carbon_monoxide": null}}"#;
+        let data: AirQualityResponse = serde_json::from_str(json).unwrap();
+        let result = resolve_headline_aqi(&data, Region::Us, None);
+        assert_eq!(
+            result,
+            (
+                42,
+                AqiCategory::Us(UsAqiCategory::Good),
+                AqiSource::OpenMeteo
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_headline_aqi_us_region_with_missing_us_aqi_defaults_to_zero() {
+        let json = r#"{"current": {"us_aqi": null, "european_aqi": null, "pm2_5": null,
+            "pm10": null, "ozone": null, "nitrogen_dioxide": null, "carbon_monoxide": null}}"#;
+        let data: AirQualityResponse = serde_json::from_str(json).unwrap();
+        let result = resolve_headline_aqi(&data, Region::Us, None);
+        assert_eq!(
+            result,
+            (
+                0,
+                AqiCategory::Us(UsAqiCategory::Good),
+                AqiSource::OpenMeteo
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_headline_aqi_europe_region_without_aqicn_returns_open_meteo_eu() {
+        let json = r#"{"current": {"us_aqi": null, "european_aqi": 25, "pm2_5": null,
+            "pm10": null, "ozone": null, "nitrogen_dioxide": null, "carbon_monoxide": null}}"#;
+        let data: AirQualityResponse = serde_json::from_str(json).unwrap();
+        let result = resolve_headline_aqi(&data, Region::Europe, None);
+        assert_eq!(
+            result,
+            (
+                25,
+                AqiCategory::Eu(EuAqiCategory::Fair),
+                AqiSource::OpenMeteo
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_headline_aqi_europe_region_with_missing_european_aqi_defaults_to_zero() {
+        let json = r#"{"current": {"us_aqi": null, "european_aqi": null, "pm2_5": null,
+            "pm10": null, "ozone": null, "nitrogen_dioxide": null, "carbon_monoxide": null}}"#;
+        let data: AirQualityResponse = serde_json::from_str(json).unwrap();
+        let result = resolve_headline_aqi(&data, Region::Europe, None);
+        assert_eq!(
+            result,
+            (
+                0,
+                AqiCategory::Eu(EuAqiCategory::Good),
+                AqiSource::OpenMeteo
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_headline_aqi_unknown_region_behaves_as_us() {
+        let json = r#"{"current": {"us_aqi": 175, "european_aqi": null, "pm2_5": null,
+            "pm10": null, "ozone": null, "nitrogen_dioxide": null, "carbon_monoxide": null}}"#;
+        let data: AirQualityResponse = serde_json::from_str(json).unwrap();
+        let result = resolve_headline_aqi(&data, Region::Unknown, None);
+        assert_eq!(
+            result,
+            (
+                175,
+                AqiCategory::Us(UsAqiCategory::Unhealthy),
+                AqiSource::OpenMeteo
+            )
+        );
+    }
+
+    // --- UsAqiCategory::from_aqi boundaries ---
+
+    #[test]
+    fn us_aqi_category_good_at_50() {
+        assert_eq!(UsAqiCategory::from_aqi(50), UsAqiCategory::Good);
+        assert_eq!(UsAqiCategory::from_aqi(0), UsAqiCategory::Good);
+    }
+
+    #[test]
+    fn us_aqi_category_moderate_at_51_and_100() {
+        assert_eq!(UsAqiCategory::from_aqi(51), UsAqiCategory::Moderate);
+        assert_eq!(UsAqiCategory::from_aqi(100), UsAqiCategory::Moderate);
+    }
+
+    #[test]
+    fn us_aqi_category_unhealthy_sensitive_at_101_and_150() {
+        assert_eq!(
+            UsAqiCategory::from_aqi(101),
+            UsAqiCategory::UnhealthySensitive
+        );
+        assert_eq!(
+            UsAqiCategory::from_aqi(150),
+            UsAqiCategory::UnhealthySensitive
+        );
+    }
+
+    #[test]
+    fn us_aqi_category_unhealthy_at_151_and_200() {
+        assert_eq!(UsAqiCategory::from_aqi(151), UsAqiCategory::Unhealthy);
+        assert_eq!(UsAqiCategory::from_aqi(200), UsAqiCategory::Unhealthy);
+    }
+
+    #[test]
+    fn us_aqi_category_very_unhealthy_at_201_and_300() {
+        assert_eq!(UsAqiCategory::from_aqi(201), UsAqiCategory::VeryUnhealthy);
+        assert_eq!(UsAqiCategory::from_aqi(300), UsAqiCategory::VeryUnhealthy);
+    }
+
+    #[test]
+    fn us_aqi_category_hazardous_at_301_and_above() {
+        assert_eq!(UsAqiCategory::from_aqi(301), UsAqiCategory::Hazardous);
+        assert_eq!(UsAqiCategory::from_aqi(999), UsAqiCategory::Hazardous);
+    }
+
+    // --- EuAqiCategory::from_aqi boundaries ---
+
+    #[test]
+    fn eu_aqi_category_good_at_20() {
+        assert_eq!(EuAqiCategory::from_aqi(20), EuAqiCategory::Good);
+        assert_eq!(EuAqiCategory::from_aqi(0), EuAqiCategory::Good);
+    }
+
+    #[test]
+    fn eu_aqi_category_fair_at_21_and_40() {
+        assert_eq!(EuAqiCategory::from_aqi(21), EuAqiCategory::Fair);
+        assert_eq!(EuAqiCategory::from_aqi(40), EuAqiCategory::Fair);
+    }
+
+    #[test]
+    fn eu_aqi_category_moderate_at_41_and_60() {
+        assert_eq!(EuAqiCategory::from_aqi(41), EuAqiCategory::Moderate);
+        assert_eq!(EuAqiCategory::from_aqi(60), EuAqiCategory::Moderate);
+    }
+
+    #[test]
+    fn eu_aqi_category_poor_at_61_and_80() {
+        assert_eq!(EuAqiCategory::from_aqi(61), EuAqiCategory::Poor);
+        assert_eq!(EuAqiCategory::from_aqi(80), EuAqiCategory::Poor);
+    }
+
+    #[test]
+    fn eu_aqi_category_very_poor_at_81_and_100() {
+        assert_eq!(EuAqiCategory::from_aqi(81), EuAqiCategory::VeryPoor);
+        assert_eq!(EuAqiCategory::from_aqi(100), EuAqiCategory::VeryPoor);
+    }
+
+    #[test]
+    fn eu_aqi_category_extremely_poor_at_101_and_above() {
+        assert_eq!(EuAqiCategory::from_aqi(101), EuAqiCategory::ExtremelyPoor);
+        assert_eq!(EuAqiCategory::from_aqi(999), EuAqiCategory::ExtremelyPoor);
+    }
+
+    // --- AirQualityData::standard() ---
+
+    #[test]
+    fn air_quality_data_standard_returns_us_for_us_variant() {
+        let data = AirQualityData {
+            aqi: 0,
+            category: AqiCategory::Us(UsAqiCategory::Good),
+            pm2_5: 0.0,
+            pm10: 0.0,
+            ozone: 0.0,
+            nitrogen_dioxide: 0.0,
+            carbon_monoxide: 0.0,
+            aqi_source: AqiSource::OpenMeteo,
+        };
+        assert_eq!(data.standard(), AqiStandard::Us);
+    }
+
+    #[test]
+    fn air_quality_data_standard_returns_european_for_eu_variant() {
+        let data = AirQualityData {
+            aqi: 0,
+            category: AqiCategory::Eu(EuAqiCategory::Good),
+            pm2_5: 0.0,
+            pm10: 0.0,
+            ozone: 0.0,
+            nitrogen_dioxide: 0.0,
+            carbon_monoxide: 0.0,
+            aqi_source: AqiSource::OpenMeteo,
+        };
+        assert_eq!(data.standard(), AqiStandard::European);
+    }
+
+    // --- pollutant Option defaults ---
+
+    #[test]
+    fn air_quality_response_missing_pollutants_default_to_zero_after_fetch() {
+        let json = r#"{"current": {"us_aqi": 42, "european_aqi": null, "pm2_5": null,
+            "pm10": null, "ozone": null, "nitrogen_dioxide": null, "carbon_monoxide": null}}"#;
+        let data: AirQualityResponse = serde_json::from_str(json).unwrap();
+        let (aqi, category, aqi_source) = resolve_headline_aqi(&data, Region::Us, None);
+        let built = AirQualityData {
+            aqi,
+            category,
+            pm2_5: data.current.pm2_5.unwrap_or(0.0),
+            pm10: data.current.pm10.unwrap_or(0.0),
+            ozone: data.current.ozone.unwrap_or(0.0),
+            nitrogen_dioxide: data.current.nitrogen_dioxide.unwrap_or(0.0),
+            carbon_monoxide: data.current.carbon_monoxide.unwrap_or(0.0),
+            aqi_source,
+        };
+        assert_eq!(built.pm2_5, 0.0);
+        assert_eq!(built.pm10, 0.0);
+        assert_eq!(built.ozone, 0.0);
+        assert_eq!(built.nitrogen_dioxide, 0.0);
+        assert_eq!(built.carbon_monoxide, 0.0);
     }
 }

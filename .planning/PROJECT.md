@@ -16,13 +16,23 @@ path.
 
 ## Current State
 
-**Shipped:** v0.9 TechDebt (2026-07-01) — eliminated token/URL leakage from logs
-and removed reachable panics from production code paths. 2 phases, 5 plans, 8
-requirements (SEC-01..05, FAULT-01..03), all satisfied and audited (8/8). CI gates
-green; wire contract unchanged.
+**Shipped:** v0.9.1 Test Coverage Lift (2026-07-02) — workspace line coverage
+lifted 48.72% → 85.20% (measured via `cargo llvm-cov`), with a `--fail-under-lines 75`
+CI gate now enforcing the floor. 3 phases, 11 plans, 8 requirements (COV-01..08),
+all satisfied and verified (8/8). Wire contract byte-identical across the whole
+milestone. Only source-level change: `select_temp_from_map` extracted from
+`override_current_temp` in `src/weather_jma.rs` to make it testable without an
+async runtime.
 
-**Next milestone:** not yet defined — run `/gsd-new-milestone`. Candidate work is
-the 18 deferred items in STATE.md (DEPS, TEST, API, PERF, RES categories).
+**Prior:** v0.9 TechDebt (2026-07-01) — eliminated token/URL leakage from logs
+and removed reachable panics from production code paths.
+
+## Next Milestone: TBD
+
+v0.9.1 shipped 2026-07-02. Next milestone not yet defined. Run
+`/gsd-new-milestone` to scope and plan it. Immediate release-facing follow-up
+before the next milestone: publish the crate to crates.io (README/CHANGELOG
+refresh + `cargo publish` via the `release-prep` skill).
 
 ## Requirements
 
@@ -45,12 +55,23 @@ the 18 deferred items in STATE.md (DEPS, TEST, API, PERF, RES categories).
       validation, panic-safe D-Bus deserialization, URL PII-leak assertion in CI — v0.9
 - ✓ General faults pass: reachable JMA panics replaced with NaN-safe/observable paths;
       test-helper unwraps carry fixture context — v0.9
+- ✓ Test coverage lifted to production-grade with a CI floor — v0.9.1:
+    - `alerts.rs` covered (COV-01) — NWS/MeteoAlarm/ECCC/BOM parsers, expiry filter, region dispatch
+    - `weather.rs` covered (COV-02) — Open-Meteo parse → WeatherData, JMA override path
+    - `air_quality.rs` covered (COV-03) — AQI parse, AQICN headline merge, source tracking
+    - `location.rs` covered (COV-04) — geocoding, IP geolocation, saved-location matching
+    - `error.rs` covered (COV-05) — From impls, Display output, WireError PII-scrub
+    - Coverage tails lifted (COV-06) — `codes.rs` 62.37→99.52%, `geo.rs` 70.13→94.49%,
+      `time.rs` 74.51→99.41%, `weather_jma.rs` 71.95→87.70%
+    - Workspace line coverage ≥70% verified (COV-07) — measured 85.20% via `cargo llvm-cov`
+    - CI coverage gate at 75% (COV-08) — `.gitlab-ci.yml` `coverage` job enforces
+      `--fail-under-lines 75`
 
 ### Active
 
 <!-- Current scope. Building toward these. -->
 
-- (none — v0.9 shipped; next milestone not yet defined. See STATE.md Deferred Items.)
+_(No active requirements — v0.9.1 milestone complete. Next milestone TBD.)_
 
 ### Out of Scope
 
@@ -118,4 +139,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-01 after v0.9 TechDebt milestone*
+*Last updated: 2026-07-02 after v0.9.1 milestone close*

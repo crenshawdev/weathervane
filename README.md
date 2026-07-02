@@ -34,7 +34,7 @@ Region detection is automatic based on coordinates. Everywhere else gets weather
 
 ```toml
 [dependencies]
-weathervane = "0.3"
+weathervane = "0.9"
 ```
 
 ```rust
