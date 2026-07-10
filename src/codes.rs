@@ -96,9 +96,10 @@ impl WeatherCondition {
 }
 
 /// Cardinal/intercardinal compass direction from wind bearing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum CompassDirection {
     /// North (338-360, 0-22 degrees).
+    #[default]
     N,
     /// Northeast (23-67 degrees).
     NE,
