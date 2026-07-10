@@ -1,6 +1,6 @@
 ---
 source: tests/wire_contract.rs
-expression: json(&v)
+expression: round_trip(&daily_forecast())
 ---
 {
   "date": "2026-06-11",
@@ -8,6 +8,10 @@ expression: json(&v)
   "temp_min": 58.1,
   "weathercode": 3,
   "condition": "Overcast",
+  "windspeed_max": 14.2,
+  "wind_direction": 305,
+  "compass_direction": "NW",
+  "precipitation_probability_max": 30,
   "sunrise": "2026-06-11T05:21",
   "sunset": "2026-06-11T20:29"
 }

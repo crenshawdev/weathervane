@@ -73,6 +73,10 @@ Rust API reference: `API.md`.
       "temp_min": 58.1,
       "weathercode": 3,
       "condition": "Overcast",
+      "windspeed_max": 14.2,
+      "wind_direction": 305,
+      "compass_direction": "NW",
+      "precipitation_probability_max": 30,
       "sunrise": "2026-06-11T05:21",
       "sunset": "2026-06-11T20:29"
     }
@@ -256,6 +260,10 @@ Healthy:
         "temp_min": 58.1,
         "weathercode": 3,
         "condition": "Overcast",
+        "windspeed_max": 14.2,
+        "wind_direction": 305,
+        "compass_direction": "NW",
+        "precipitation_probability_max": 30,
         "sunrise": "2026-06-11T05:21",
         "sunset": "2026-06-11T20:29"
       }
@@ -306,6 +314,10 @@ Stale (upstream failing, last-good retained):
         "temp_min": 58.1,
         "weathercode": 3,
         "condition": "Overcast",
+        "windspeed_max": 14.2,
+        "wind_direction": 305,
+        "compass_direction": "NW",
+        "precipitation_probability_max": 30,
         "sunrise": "2026-06-11T05:21",
         "sunset": "2026-06-11T20:29"
       }

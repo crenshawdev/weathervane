@@ -81,6 +81,10 @@ fn daily_forecast() -> DailyForecast {
         temp_min: 58.1,
         weathercode: 3,
         condition: WeatherCondition::Overcast,
+        windspeed_max: 14.2,
+        wind_direction: 305,
+        compass_direction: CompassDirection::NW,
+        precipitation_probability_max: Some(30),
         sunrise: "2026-06-11T05:21".to_string(),
         sunset: "2026-06-11T20:29".to_string(),
     }
