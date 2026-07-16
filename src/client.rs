@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use std::sync::RwLock;
 use std::time::Duration;
 
-const USER_AGENT: &str = "(weathervane, https://gitlab.com/vintagetechie/weathervane)";
+const USER_AGENT: &str = "(weathervane, https://github.com/crenshawdev/weathervane)";
 
 /// Per-request timeout applied to all outgoing HTTP calls.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);

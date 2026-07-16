@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.10.0 — 2026-07-15
+
+### Added
+- `DailyForecast` gains four fields from the Open-Meteo daily block:
+  `windspeed_max: f32`, `wind_direction: i32`,
+  `compass_direction: CompassDirection`, and
+  `precipitation_probability_max: Option<i32>`. Derived from
+  `windspeed_10m_max`, `wind_direction_10m_dominant`, and
+  `precipitation_probability_max`; `compass_direction` via
+  `CompassDirection::from_degrees`.
+- NWS current-observation override for US coordinates: live National Weather
+  Service observations overlay the Open-Meteo base (temperature, wind,
+  humidity, pressure, dew point, visibility), mirroring the existing AMeDAS
+  temperature override for Japan. The two overrides are mutually exclusive by
+  geography; both fall through to Open-Meteo on any failure. Modeled sky fields
+  (weathercode/condition/cloud cover/UV) stay Open-Meteo. Internal
+  `weather_nws` module; no new public type.
+
+### Wire contract
+- Additive only: the four new `DailyForecast` fields extend the daily-forecast
+  shape. `tests/snapshots/` and `CONTRACT.md` updated accordingly; no field
+  removed or retyped. Existing payloads round-trip
+  (`precipitation_probability_max` is `Option`).
+
+### Packaging
+- `repository` and the outgoing HTTP `User-Agent` now point to
+  `github.com/crenshawdev/weathervane` (the crate's home moved to GitHub).
+
 ## 0.9.1 — 2026-07-02
 
 ### Testing

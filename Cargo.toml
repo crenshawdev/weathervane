@@ -1,12 +1,13 @@
 [package]
 name = "weathervane"
-version = "0.9.1"
+version = "0.10.0"
 edition = "2021"
 authors = ["John Crenshaw <john@jcrenshaw.dev>"]
 license = "MIT OR Apache-2.0"
 description = "Weather data, air quality, and alerts from public APIs. Fetches, parses, and returns clean Rust types."
-repository = "https://gitlab.com/vintagetechie/weathervane"
+repository = "https://github.com/crenshawdev/weathervane"
 documentation = "https://docs.rs/weathervane"
+exclude = [".planning/", "CLAUDE.md", ".gitlab-ci.yml"]
 
 [dependencies]
 async-stream = "0.3"
