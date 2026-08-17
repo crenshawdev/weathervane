@@ -13,7 +13,7 @@ exclude = [".planning/", "CLAUDE.md", ".gitlab-ci.yml"]
 async-stream = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
-quick-xml = { version = "0.37", features = ["serialize"] }
+quick-xml = { version = "0.41", features = ["serialize"] }
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
