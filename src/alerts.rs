@@ -1161,8 +1161,7 @@ mod tests {
 
     #[test]
     fn eccc_drops_expired_alert() {
-        let xml = format!(
-            r#"<alert>
+        let xml = r#"<alert>
                 <identifier>CA-ON-2026-007</identifier>
                 <status>Actual</status>
                 <msgType>Alert</msgType>
@@ -1180,7 +1179,7 @@ mod tests {
                     </area>
                 </info>
             </alert>"#
-        );
+            .to_string();
         let mut seen_ids = HashSet::new();
         let alert = parse_eccc_cap(&xml, 5.0, 5.0, &mut seen_ids);
 

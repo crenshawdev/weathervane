@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 description = "Weather data, air quality, and alerts from public APIs. Fetches, parses, and returns clean Rust types."
 repository = "https://github.com/crenshawdev/weathervane"
 documentation = "https://docs.rs/weathervane"
-exclude = [".planning/", "CLAUDE.md", ".gitlab-ci.yml"]
+exclude = [".planning/", "CLAUDE.md", ".github/"]
 
 [dependencies]
 async-stream = "0.3"

@@ -1,7 +1,10 @@
 # weathervane
 
+[![CI](https://github.com/crenshawdev/weathervane/actions/workflows/ci.yml/badge.svg)](https://github.com/crenshawdev/weathervane/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/weathervane)](https://crates.io/crates/weathervane)
 [![docs.rs](https://docs.rs/weathervane/badge.svg)](https://docs.rs/weathervane)
+[![Latest release](https://img.shields.io/github/v/release/crenshawdev/weathervane?label=release)](https://github.com/crenshawdev/weathervane/releases/latest)
+[![License](https://img.shields.io/crates/l/weathervane)](LICENSE-APACHE)
 
 Weather data, air quality, and alerts from public APIs. You call the async functions, you get back clean Rust types. That's it.
 
@@ -34,7 +37,7 @@ Region detection is automatic based on coordinates. Everywhere else gets weather
 
 ```toml
 [dependencies]
-weathervane = "0.9"
+weathervane = "0.10"
 ```
 
 ```rust
