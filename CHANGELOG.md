@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1 — 2026-08-26
+
+### Security
+- Update `quick-xml` from 0.37 to 0.41 to address RUSTSEC-2026-0194 and
+  RUSTSEC-2026-0195.
+
 ## 0.10.0 — 2026-07-15
 
 ### Added
