@@ -1,5 +1,6 @@
 /target
 Cargo.lock
+coverage.xml
 .idea/
 
 # MemPalace per-project files (issue #185)
