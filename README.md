@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/crenshawdev/weathervane/actions/workflows/ci.yml/badge.svg)](https://github.com/crenshawdev/weathervane/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/weathervane)](https://crates.io/crates/weathervane)
+[![Crates.io downloads](https://img.shields.io/crates/d/weathervane?logo=rust)](https://crates.io/crates/weathervane)
 [![docs.rs](https://docs.rs/weathervane/badge.svg)](https://docs.rs/weathervane)
 [![Latest release](https://img.shields.io/github/v/release/crenshawdev/weathervane?label=release)](https://github.com/crenshawdev/weathervane/releases/latest)
 [![License](https://img.shields.io/crates/l/weathervane)](LICENSE-APACHE)
