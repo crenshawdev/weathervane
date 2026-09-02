@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.11.0 — 2026-09-02
+
+### Added
+- `fetch_alerts_detailed(lat, lon) -> Result<AlertReport>` returns each alert
+  with the provider's area name and whether the list was narrowed to the
+  caller's area. `AlertEntry { alert, area_desc }` and
+  `AlertReport { alerts, region_filtered }` are new public types. `area_desc`
+  is MeteoAlarm `cap:areaDesc`, NWS `areaDesc`, the containing ECCC polygon's
+  `areaDesc`, and `""` for BOM, which sends none. `fetch_alerts` is unchanged,
+  now a thin wrapper that drops both. (#16)
+
+### Fixed
+- MeteoAlarm country detection reverse geocodes instead of guessing from a
+  bounding box, and a failure returns `Err` rather than an empty alert list
+  that reads like a quiet day. (#11)
+- The user's EMMA_ID is picked by ranked match instead of `HashMap` iteration
+  order. 336 of the 2237 codenames match more than one entry inside their own
+  country; "Wien" matches 26 Austrian codenames, and the right one, AT010, came
+  up about 1 run in 26. (#12)
+- A MeteoAlarm feed that tags its entries under a scheme other than `EMMA_ID`
+  no longer comes back empty while reporting itself as filtered. The match is
+  gated on `valueName == "EMMA_ID"`, and a feed carrying none renders
+  unfiltered with `region_filtered: false`. Across all 37 live feeds on
+  2026-09-02, bulgaria and france are NUTS3, hungary is NUTS2, and estonia,
+  israel, latvia, norway, slovenia and sweden send no geocode at all. (#16)
+
+### Changed
+- `reverse_geocode` caches per coordinate for the process lifetime, which
+  Nominatim's usage policy requires of clients repeating a query. A consumer
+  refreshing every 30 minutes sends one request per location per process
+  instead of 48 a day. (#15)
+
+### Wire contract
+- Additive only. `AlertEntry` and `AlertReport` are new shapes; `Alert` is
+  untouched and the 28 existing snapshots round-trip byte-identical.
+
+### Dependencies
+- `reqwest` 0.12 -> 0.13. (#8)
+
 ## 0.10.1 — 2026-08-26
 
 ### Security

@@ -1,6 +1,6 @@
 [package]
 name = "weathervane"
-version = "0.10.1"
+version = "0.11.0"
 edition = "2021"
 authors = ["John Crenshaw <john@jcrenshaw.dev>"]
 license = "MIT OR Apache-2.0"
