@@ -279,15 +279,27 @@ fn match_emma_id(
 
     for search_term in &search_terms {
         let search_lower = search_term.to_lowercase();
-        for (emma_id, name) in &codenames.codes {
-            if !emma_id.starts_with(&country_prefix) {
-                continue;
-            }
-            let name_lower = name.to_lowercase();
-            if name_lower.contains(&search_lower) || search_lower.contains(&name_lower) {
-                tracing::debug!("Resolved EMMA_ID: {}", emma_id);
-                return Some(emma_id.clone());
-            }
+
+        // Rank every candidate rather than taking the first hit. `codes` is a
+        // HashMap, so "first hit" means whichever one iteration happened to
+        // reach, and Vienna's "Wien" matches 26 Austrian codenames.
+        let best = codenames
+            .codes
+            .iter()
+            .filter(|(emma_id, _)| emma_id.starts_with(&country_prefix))
+            .filter_map(|(emma_id, name)| {
+                rank_emma_match(&search_lower, &name.to_lowercase()).map(|rank| (rank, emma_id))
+            })
+            // Equal ranks fall back to the EMMA_ID, which is unique, so the
+            // winner is total and identical on every run. Reversed because the
+            // lower ID is the one to keep.
+            .max_by(|(a_rank, a_id), (b_rank, b_id)| {
+                a_rank.cmp(b_rank).then_with(|| b_id.cmp(a_id))
+            });
+
+        if let Some((_, emma_id)) = best {
+            tracing::debug!("Resolved EMMA_ID: {}", emma_id);
+            return Some(emma_id.clone());
         }
     }
 
@@ -297,6 +309,43 @@ fn match_emma_id(
         country_prefix
     );
     None
+}
+
+/// How well one codename fits one search term, worst variant first so `max_by`
+/// picks the strongest fit.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum EmmaMatch {
+    /// The codename is the longer string, as "Wiener Neustadt" is for a search
+    /// of "Wien". The weakest kind of hit, and the shorter codename is the
+    /// closer one, hence the `Reverse`.
+    CodenameContainsTerm(std::cmp::Reverse<usize>),
+    /// The search term is the longer string, as "Warsaw County" is for a
+    /// codename of "Warsaw". A real hit on a coarser region, and here the
+    /// longer codename is the more specific one.
+    TermContainsCodename(usize),
+    /// Same name on both sides.
+    Exact,
+}
+
+/// Returns None when the two do not relate at all. Empty strings never match,
+/// since `contains("")` is true for everything and would hand back an arbitrary
+/// region for a location Nominatim gave a blank name.
+fn rank_emma_match(search_lower: &str, name_lower: &str) -> Option<EmmaMatch> {
+    if search_lower.is_empty() || name_lower.is_empty() {
+        return None;
+    }
+
+    if name_lower == search_lower {
+        Some(EmmaMatch::Exact)
+    } else if search_lower.contains(name_lower) {
+        Some(EmmaMatch::TermContainsCodename(name_lower.len()))
+    } else if name_lower.contains(search_lower) {
+        Some(EmmaMatch::CodenameContainsTerm(std::cmp::Reverse(
+            name_lower.len(),
+        )))
+    } else {
+        None
+    }
 }
 
 /// Fetches active weather alerts from MeteoAlarm for European locations.
@@ -1402,6 +1451,116 @@ mod tests {
         let codes = codenames(&[("PL1465", "Warszawa")]);
         assert_eq!(
             match_emma_id(&address(Some("Warszawa"), None, None), "PL", &codes),
+            Some("PL1465".to_string())
+        );
+    }
+
+    /// Vienna's real shape in the MeteoAlarm list: the city itself, a
+    /// same-prefix neighbour, and the numbered districts. "Wien" matches all of
+    /// them, and only AT010 is right.
+    fn vienna_codenames() -> MeteoAlarmCodenames {
+        let mut pairs = vec![
+            ("AT010", "Wien"),
+            ("AT304", "Wiener Neustadt (Stadt)"),
+            ("AT323", "Wiener Neustadt (Land)"),
+        ];
+        let districts: Vec<String> = (901..=923).map(|n| format!("AT{n}")).collect();
+        for id in &districts {
+            pairs.push((id.as_str(), "Wien Innere Stadt"));
+        }
+        codenames(&pairs)
+    }
+
+    fn vienna_address() -> NominatimAddress {
+        NominatimAddress {
+            country: Some("Österreich".to_string()),
+            country_code: Some("at".to_string()),
+            city: Some("Wien".to_string()),
+            town: None,
+            county: None,
+            state: Some("Wien".to_string()),
+        }
+    }
+
+    #[test]
+    fn match_emma_id_prefers_the_exact_codename_over_longer_ones() {
+        assert_eq!(
+            match_emma_id(&vienna_address(), "AT", &vienna_codenames()),
+            Some("AT010".to_string())
+        );
+    }
+
+    #[test]
+    fn match_emma_id_is_stable_across_hashmap_instances() {
+        // Regression guard for the ambiguity itself. `codes` is a HashMap, so a
+        // first-hit-wins loop returned a different one of these 26 Austrian
+        // codenames per run. A fresh map each round is what a fresh fetch
+        // builds, and RandomState reseeds every instance.
+        let resolved: std::collections::BTreeSet<String> = (0..200)
+            .filter_map(|_| match_emma_id(&vienna_address(), "AT", &vienna_codenames()))
+            .collect();
+        assert_eq!(
+            resolved,
+            ["AT010".to_string()].into_iter().collect(),
+            "one input must resolve to exactly one EMMA_ID"
+        );
+    }
+
+    #[test]
+    fn match_emma_id_prefers_the_longest_codename_the_term_contains() {
+        // Both are real regions containing the search term. "Rhone-Alpes" is the
+        // more specific of the two, so a search for "Auvergne-Rhone-Alpes"
+        // should not settle for "Rhone".
+        let codes = codenames(&[("FR001", "Rhone"), ("FR002", "Rhone-Alpes")]);
+        let address = NominatimAddress {
+            country: Some("France".to_string()),
+            country_code: Some("fr".to_string()),
+            city: None,
+            town: None,
+            county: None,
+            state: Some("Auvergne-Rhone-Alpes".to_string()),
+        };
+        assert_eq!(
+            match_emma_id(&address, "FR", &codes),
+            Some("FR002".to_string())
+        );
+    }
+
+    #[test]
+    fn match_emma_id_ties_break_on_the_lower_id() {
+        // Two codenames, same name, same rank. Nothing distinguishes them but
+        // the ID, and the answer still has to be the same every run.
+        let codes = codenames(&[("PL2000", "Warszawa"), ("PL1465", "Warszawa")]);
+        for _ in 0..50 {
+            assert_eq!(
+                match_emma_id(&address(Some("Warszawa"), None, None), "PL", &codes),
+                Some("PL1465".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn match_emma_id_ignores_blank_place_names() {
+        // Nominatim can answer with an empty string, and `contains("")` is true
+        // for every codename, which would hand back an arbitrary region.
+        let codes = codenames(&[("PL1465", "Warszawa")]);
+        assert_eq!(
+            match_emma_id(&address(Some(""), None, None), "PL", &codes),
+            None
+        );
+    }
+
+    #[test]
+    fn match_emma_id_search_term_order_still_wins_over_rank() {
+        // The city is checked before the state, so a weak city hit beats a
+        // perfect state hit. Ranking is only a tie-break inside one term.
+        let codes = codenames(&[("PL1465", "Warszawa Centrum"), ("PL0100", "Masovian")]);
+        assert_eq!(
+            match_emma_id(
+                &address(Some("Warszawa"), None, Some("Masovian")),
+                "PL",
+                &codes
+            ),
             Some("PL1465".to_string())
         );
     }
