@@ -139,6 +139,11 @@ provider. Failure to determine the location's country is an `Err`
 (`LocationDetection`), never an empty vec, so a consumer can tell a quiet day
 from a failed lookup.
 
+The Nominatim reverse geocode behind the European path is cached per coordinate
+pair for the process lifetime, so only the first call for a location reaches
+Nominatim; a consumer refreshing on a timer sends one request per location, not
+one per refresh. Failed lookups are not cached and retry on the next call.
+
 Each `Alert` has:
 - `id: String` -- provider-specific identifier
 - `event: String` -- event type name (e.g. "Winter Storm Warning")
