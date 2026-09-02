@@ -75,10 +75,12 @@ pub struct AlertEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlertReport {
     pub alerts: Vec<AlertEntry>,
-    /// `false` only when a MeteoAlarm national feed was returned without an
-    /// EMMA_ID for the location, so the entries are national, not local.
-    /// NWS, ECCC and BOM filter by point, polygon and geohash respectively,
-    /// and an empty result is trivially filtered, so all of those are `true`.
+    /// `false` only when a MeteoAlarm national feed was returned unfiltered:
+    /// no EMMA_ID resolved for the location, or the feed carries no EMMA_ID
+    /// geocodes to filter on (France tags entries with NUTS3), so the entries
+    /// are national, not local. NWS, ECCC and BOM filter by point, polygon and
+    /// geohash respectively, and an empty result is trivially filtered, so all
+    /// of those are `true`.
     pub region_filtered: bool,
 }
 
@@ -244,6 +246,10 @@ struct MeteoAlarmEntry {
 /// Geocode element containing EMMA_ID area identifier.
 #[derive(Debug, Deserialize)]
 struct MeteoAlarmGeocode {
+    /// Which scheme `value` belongs to. Most feeds say `EMMA_ID`; France says
+    /// `NUTS3`, whose codes are not EMMA_IDs and must not be filtered as such.
+    #[serde(rename = "valueName")]
+    value_name: Option<String>,
     value: Option<String>,
 }
 
@@ -456,60 +462,100 @@ async fn fetch_meteoalarm_alerts(latitude: f64, longitude: f64) -> Result<AlertR
     let xml_text = response.text().await?;
     let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml_text)?;
 
-    let alerts = meteoalarm_alerts_from_feed(feed, &user_emma_id);
+    let report = meteoalarm_alerts_from_feed(feed, &user_emma_id);
 
-    match &user_emma_id {
-        Some(emma_id) => tracing::debug!(
+    match (&user_emma_id, report.region_filtered) {
+        (Some(emma_id), true) => tracing::debug!(
             "Fetched {} alert(s) from MeteoAlarm ({}), filtered to {}",
-            alerts.len(),
+            report.alerts.len(),
             country,
             emma_id
         ),
-        None => tracing::warn!(
+        (Some(emma_id), false) => tracing::warn!(
+            "Fetched {} alert(s) from MeteoAlarm ({}), UNFILTERED - the feed carries no \
+            EMMA_ID geocodes, so the filter to {} could not apply",
+            report.alerts.len(),
+            country,
+            emma_id
+        ),
+        (None, _) => tracing::warn!(
             "Fetched {} alert(s) from MeteoAlarm ({}), UNFILTERED - no EMMA_ID \
             for this location, so these are national alerts, not local ones",
-            alerts.len(),
+            report.alerts.len(),
             country
         ),
     }
-    Ok(AlertReport {
-        alerts,
-        region_filtered: user_emma_id.is_some(),
-    })
+    Ok(report)
 }
 
-/// The entry's EMMA_ID, if the feed tagged it with one.
+/// The entry's EMMA_ID, if the feed tagged it with one. A geocode under any
+/// other scheme (`NUTS3` in France) is not an EMMA_ID and yields `None`.
 fn entry_emma_id(entry: &MeteoAlarmEntry) -> Option<&str> {
     entry
         .cap_geocode
         .as_ref()
+        .filter(|gc| gc.value_name.as_deref() == Some("EMMA_ID"))
         .and_then(|gc| gc.value.as_deref())
 }
 
 /// Lives in its own function so it can be unit-tested against fixtures without a live network.
-fn meteoalarm_alerts_from_feed(
-    feed: MeteoAlarmFeed,
-    user_emma_id: &Option<String>,
-) -> Vec<AlertEntry> {
-    if let Some(user_id) = user_emma_id {
-        let untagged = feed
-            .entries
-            .iter()
-            .filter(|entry| entry_emma_id(entry).is_none())
-            .count();
-        if untagged > 0 {
-            tracing::debug!(
-                "Dropped {} untagged MeteoAlarm entr(y/ies) while filtering to {}",
-                untagged,
+///
+/// A resolved EMMA_ID can only filter a feed that tags its entries with
+/// EMMA_IDs. If none of the entries carries one, the filter cannot apply and
+/// the whole feed renders unfiltered, reported as such, rather than being
+/// emptied by a comparison that can never match.
+fn meteoalarm_alerts_from_feed(feed: MeteoAlarmFeed, user_emma_id: &Option<String>) -> AlertReport {
+    let feed_has_emma_ids = feed
+        .entries
+        .iter()
+        .any(|entry| entry_emma_id(entry).is_some());
+
+    let filter = match user_emma_id {
+        Some(user_id) if !feed.entries.is_empty() && !feed_has_emma_ids => {
+            let mut schemes: Vec<&str> = feed
+                .entries
+                .iter()
+                .filter_map(|entry| entry.cap_geocode.as_ref())
+                .filter_map(|gc| gc.value_name.as_deref())
+                .collect();
+            schemes.sort_unstable();
+            schemes.dedup();
+            tracing::warn!(
+                "MeteoAlarm feed carries no EMMA_ID geocodes (found {:?}); the filter to {} \
+                cannot apply, rendering the feed unfiltered",
+                schemes,
                 user_id
             );
+            None
         }
-    }
+        Some(user_id) => {
+            let untagged = feed
+                .entries
+                .iter()
+                .filter(|entry| entry_emma_id(entry).is_none())
+                .count();
+            if untagged > 0 {
+                tracing::debug!(
+                    "Dropped {} untagged MeteoAlarm entr(y/ies) while filtering to {}",
+                    untagged,
+                    user_id
+                );
+            }
+            Some(user_id.clone())
+        }
+        None => None,
+    };
 
-    feed.entries
+    let alerts = feed
+        .entries
         .into_iter()
-        .filter_map(|entry| parse_meteoalarm_entry(entry, user_emma_id))
-        .collect()
+        .filter_map(|entry| parse_meteoalarm_entry(entry, &filter))
+        .collect();
+
+    AlertReport {
+        alerts,
+        region_filtered: filter.is_some(),
+    }
 }
 
 /// Parses a MeteoAlarm entry into an AlertEntry.
@@ -1172,6 +1218,7 @@ mod tests {
             <cap:sent>2026-06-01T08:00:00Z</cap:sent>
             <cap:expires>2099-01-01T00:00:00Z</cap:expires>
             <cap:geocode>
+                <valueName>EMMA_ID</valueName>
                 <cap:value>DE723</cap:value>
             </cap:geocode>
         </entry>"#;
@@ -1197,6 +1244,7 @@ mod tests {
             <cap:sent>2026-06-01T08:00:00Z</cap:sent>
             <cap:expires>2099-01-01T00:00:00Z</cap:expires>
             <cap:geocode>
+                <valueName>EMMA_ID</valueName>
                 <cap:value>DE723</cap:value>
             </cap:geocode>
         </entry>"#;
@@ -1220,6 +1268,7 @@ mod tests {
             <cap:sent>2026-06-01T08:00:00Z</cap:sent>
             <cap:expires>2099-01-01T00:00:00Z</cap:expires>
             <cap:geocode>
+                <valueName>EMMA_ID</valueName>
                 <cap:value>DE723</cap:value>
             </cap:geocode>
         </entry>"#;
@@ -1240,6 +1289,7 @@ mod tests {
             <cap:sent>2020-01-01T00:00:00Z</cap:sent>
             <cap:expires>2020-01-01T00:00:00Z</cap:expires>
             <cap:geocode>
+                <valueName>EMMA_ID</valueName>
                 <cap:value>DE723</cap:value>
             </cap:geocode>
         </entry>"#;
@@ -1261,6 +1311,7 @@ mod tests {
                 <cap:sent>2026-06-01T08:00:00Z</cap:sent>
                 <cap:expires>2099-01-01T00:00:00Z</cap:expires>
                 <cap:geocode>
+                    <valueName>EMMA_ID</valueName>
                     <cap:value>DE723</cap:value>
                 </cap:geocode>
             </entry>
@@ -1273,12 +1324,13 @@ mod tests {
                 <cap:sent>2020-01-01T00:00:00Z</cap:sent>
                 <cap:expires>2020-01-01T00:00:00Z</cap:expires>
                 <cap:geocode>
+                    <valueName>EMMA_ID</valueName>
                     <cap:value>DE723</cap:value>
                 </cap:geocode>
             </entry>
         </feed>"#;
         let feed: MeteoAlarmFeed = quick_xml::de::from_str(xml).unwrap();
-        let alerts = meteoalarm_alerts_from_feed(feed, &None);
+        let alerts = meteoalarm_alerts_from_feed(feed, &None).alerts;
 
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].alert.id, "2-717000-DE723-future");
@@ -1724,6 +1776,7 @@ mod tests {
                 <cap:sent>2026-06-01T08:00:00Z</cap:sent>
                 <cap:expires>2099-01-01T00:00:00Z</cap:expires>
                 <cap:geocode>
+                    <valueName>EMMA_ID</valueName>
                     <cap:value>PL999</cap:value>
                 </cap:geocode>
             </entry>
@@ -1741,14 +1794,15 @@ mod tests {
 
     #[test]
     fn meteoalarm_untagged_entry_dropped_when_filter_active() {
-        let alerts = meteoalarm_alerts_from_feed(untagged_feed(), &Some("PL1465".to_string()));
+        let alerts =
+            meteoalarm_alerts_from_feed(untagged_feed(), &Some("PL1465".to_string())).alerts;
 
         assert!(alerts.is_empty(), "untagged entry leaked past the filter");
     }
 
     #[test]
     fn meteoalarm_untagged_entry_kept_without_filter() {
-        let alerts = meteoalarm_alerts_from_feed(untagged_feed(), &None);
+        let alerts = meteoalarm_alerts_from_feed(untagged_feed(), &None).alerts;
 
         assert_eq!(alerts.len(), 2);
     }
@@ -1825,6 +1879,96 @@ mod tests {
     async fn dispatch_unknown_region_detailed_is_empty_and_filtered() {
         // Same Tokyo coordinate as dispatch_unknown_region_returns_empty.
         let report = fetch_alerts_detailed(35.68, 139.65).await.unwrap();
+
+        assert!(report.alerts.is_empty());
+        assert!(report.region_filtered);
+    }
+
+    // -----------------------------------------------------------------
+    // Feeds that are not EMMA_ID-tagged (France uses NUTS3)
+    // -----------------------------------------------------------------
+
+    /// The shape of every entry in the live French feed on 2026-09-02: a NUTS3
+    /// geocode, with the EMMA_ID only in a link href that is not parsed.
+    fn nuts3_entry(id: &str, nuts3: &str, area: &str) -> String {
+        format!(
+            r#"<entry>
+                <id>https://feeds.meteoalarm.org/feed/{id}</id>
+                <cap:geocode>
+                    <valueName>NUTS3</valueName>
+                    <value>{nuts3}</value>
+                </cap:geocode>
+                <link title="{area}" href="https://meteoalarm.org?geocode=EMMA_ID:FR031" hreflang="en"/>
+                <cap:areaDesc>{area}</cap:areaDesc>
+                <cap:event>Yellow Wind Warning</cap:event>
+                <cap:severity>Moderate</cap:severity>
+                <cap:sent>2026-06-01T08:00:00Z</cap:sent>
+                <cap:expires>2099-01-01T00:00:00Z</cap:expires>
+            </entry>"#
+        )
+    }
+
+    #[test]
+    fn meteoalarm_nuts3_geocode_is_not_an_emma_id() {
+        let entry: MeteoAlarmEntry =
+            quick_xml::de::from_str(&nuts3_entry("fr-1", "FR713", "Drôme")).unwrap();
+
+        assert_eq!(entry_emma_id(&entry), None);
+        assert_eq!(entry.cap_geocode.unwrap().value.as_deref(), Some("FR713"));
+    }
+
+    #[test]
+    fn meteoalarm_feed_without_emma_ids_renders_unfiltered() {
+        let xml = format!(
+            "<feed>{}{}</feed>",
+            nuts3_entry("fr-1", "FR713", "Drôme"),
+            nuts3_entry("fr-2", "FR813", "Hérault")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(feed, &Some("FR101".to_string()));
+
+        // The filter cannot apply to a feed that never carries an EMMA_ID, so
+        // nothing is dropped and the report says the list is national.
+        assert_eq!(report.alerts.len(), 2);
+        assert!(!report.region_filtered);
+        assert_eq!(report.alerts[0].area_desc, "Drôme");
+    }
+
+    #[test]
+    fn meteoalarm_mixed_feed_drops_untagged_and_stays_filtered() {
+        let xml = format!(
+            r#"<feed>
+                <entry>
+                    <id>https://feeds.meteoalarm.org/feed/tagged-here</id>
+                    <cap:event>Wind</cap:event>
+                    <cap:sent>2026-06-01T08:00:00Z</cap:sent>
+                    <cap:expires>2099-01-01T00:00:00Z</cap:expires>
+                    <cap:geocode>
+                        <valueName>EMMA_ID</valueName>
+                        <value>FR101</value>
+                    </cap:geocode>
+                </entry>
+                {}
+            </feed>"#,
+            nuts3_entry("fr-3", "FR713", "Drôme")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(feed, &Some("FR101".to_string()));
+
+        // One entry carries an EMMA_ID, so the feed is filterable: the NUTS3
+        // entry is untagged for this purpose and is dropped.
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(
+            report.alerts[0].alert.id,
+            "https://feeds.meteoalarm.org/feed/tagged-here"
+        );
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn meteoalarm_empty_feed_with_filter_is_filtered() {
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str("<feed></feed>").unwrap();
+        let report = meteoalarm_alerts_from_feed(feed, &Some("PL1465".to_string()));
 
         assert!(report.alerts.is_empty());
         assert!(report.region_filtered);

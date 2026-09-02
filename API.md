@@ -141,9 +141,10 @@ otherwise know:
   `cap:areaDesc`, NWS `areaDesc` (a `;`-separated county list), the containing
   ECCC polygon's `areaDesc`. BOM sends none, so it is `""`.
 - `region_filtered` -- `false` only when a MeteoAlarm national feed was returned
-  without an EMMA_ID for the location, so the entries are national, not local.
-  NWS, ECCC and BOM filter by point, polygon and geohash, and an empty result is
-  trivially filtered, so all of those are `true`.
+  unfiltered: no EMMA_ID resolved for the location, or the feed carries no
+  EMMA_ID geocodes to filter on (France tags entries with NUTS3), so the entries
+  are national, not local. NWS, ECCC and BOM filter by point, polygon and
+  geohash, and an empty result is trivially filtered, so all of those are `true`.
 
 When an EMMA_ID did resolve, MeteoAlarm entries carrying no geocode are dropped
 rather than shown, since they cannot be placed in any region.
