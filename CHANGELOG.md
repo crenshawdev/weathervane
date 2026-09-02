@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.12.0 — 2026-09-02
+
+### Changed
+- MeteoAlarm filtering runs in two stages. The EMMA_ID stage is unchanged and,
+  because the feed only lists regions that are alerting, remains the only one
+  that can tell a quiet day from a miss. When it yields no usable filter — no
+  EMMA_ID resolved, or the feed tags its entries under another scheme or none
+  at all — the location's place names are matched against the feed's own
+  `cap:areaDesc` values instead. Diacritics are folded and administrative
+  affixes such as "Grad" and "region" are dropped, so `Grad Zagreb` reaches
+  `Zagreb region`. An exact token match beats containment, there is no
+  substring or prefix matching, and a place name that fits more than one region
+  is a miss rather than a guess. This narrows the feed for Portugal and
+  Croatia, whose codenames resolve no usable per-region EMMA_ID, and for the
+  feeds the 0.11.0 census found carrying no EMMA_ID geocodes at all: bulgaria
+  and france (NUTS3), hungary (NUTS2), and estonia, israel, latvia, norway,
+  slovenia and sweden (no geocode). (#18)
+- `region_filtered` is `false` only when no region could be matched for the
+  location by either stage. The wire shape is unchanged. (#18)
+- The MeteoAlarm codename list is cached for the process lifetime, in the shape
+  of the station and geocode caches, so its 72 KB fetch happens once per
+  process rather than on every alerts call. (#18)
+- Reverse geocoding also reads `village` and `municipality`, searched between
+  `town` and `county`. (#18)
+
 ## 0.11.0 — 2026-09-02
 
 ### Added
