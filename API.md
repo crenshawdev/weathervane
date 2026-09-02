@@ -134,6 +134,11 @@ Dispatches to the right provider based on location:
 | Australia | BOM API    | Geohash lookup                                  |
 | Other     | --         | Returns empty vec                                |
 
+An empty vec means there are no active alerts, or the location has no covering
+provider. Failure to determine the location's country is an `Err`
+(`LocationDetection`), never an empty vec, so a consumer can tell a quiet day
+from a failed lookup.
+
 Each `Alert` has:
 - `id: String` -- provider-specific identifier
 - `event: String` -- event type name (e.g. "Winter Storm Warning")

@@ -8,10 +8,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::client::http_client;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::geo::{
-    detect_country_from_coords, detect_region, encode_geohash, get_eccc_office_codes,
-    get_meteoalarm_info, point_in_polygon, MeteoAlarmCodenames, NominatimResponse, Region,
+    detect_region, encode_geohash, get_eccc_office_codes, get_meteoalarm_info, point_in_polygon,
+    reverse_geocode, MeteoAlarmCodenames, NominatimAddress, Region,
 };
 
 /// Weather alert severity levels.
@@ -65,12 +65,7 @@ pub struct Alert {
 pub async fn fetch_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>> {
     match detect_region(latitude, longitude) {
         Region::Us => fetch_nws_alerts(latitude, longitude).await,
-        Region::Europe => {
-            let country = detect_country_from_coords(latitude, longitude)
-                .await
-                .unwrap_or_default();
-            fetch_meteoalarm_alerts(latitude, longitude, &country).await
-        }
+        Region::Europe => fetch_meteoalarm_alerts(latitude, longitude).await,
         Region::Canada => fetch_eccc_alerts(latitude, longitude).await,
         Region::Australia => fetch_bom_alerts(latitude, longitude).await,
         Region::Unknown => Ok(vec![]),
@@ -204,43 +199,84 @@ struct MeteoAlarmGeocode {
     value: Option<String>,
 }
 
-/// Resolves the user's EMMA_ID by looking up their location and matching against codenames.
-async fn resolve_user_emma_id(latitude: f64, longitude: f64, country_code: &str) -> Option<String> {
-    let nominatim_url = format!(
-        "https://nominatim.openstreetmap.org/reverse?lat={}&lon={}&format=json",
-        latitude, longitude
-    );
+/// Resolves the user's EMMA_ID by matching their place names against the
+/// MeteoAlarm codename list.
+async fn resolve_user_emma_id(address: &NominatimAddress, country_code: &str) -> Option<String> {
+    let codenames = fetch_meteoalarm_codenames().await?;
+    match_emma_id(address, country_code, &codenames)
+}
 
-    let response = http_client().ok()?.get(&nominatim_url).send().await.ok()?;
-    let nominatim: NominatimResponse = response.json().await.ok()?;
-    let address = nominatim.address?;
+/// Split from the matching so its three failure points get distinct messages
+/// rather than collapsing into one silent `None`.
+async fn fetch_meteoalarm_codenames() -> Option<MeteoAlarmCodenames> {
+    const CODENAMES_URL: &str =
+        "https://raw.githubusercontent.com/ktrue/Meteoalarm-warning/master/meteoalarm-codenames.json";
 
-    // Build list of location names to search for (most specific to least)
-    let mut search_terms: Vec<String> = Vec::new();
+    let client = match http_client() {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::warn!(
+                "No HTTP client for MeteoAlarm codenames ({}); region filter cannot be applied",
+                e
+            );
+            return None;
+        }
+    };
+
+    let response = match client.get(CODENAMES_URL).send().await {
+        Ok(response) => response,
+        Err(e) => {
+            tracing::warn!(
+                "MeteoAlarm codenames fetch failed ({}); region filter cannot be applied",
+                e
+            );
+            return None;
+        }
+    };
+
+    match response.json::<MeteoAlarmCodenames>().await {
+        Ok(codenames) => Some(codenames),
+        Err(e) => {
+            tracing::warn!(
+                "MeteoAlarm codenames decode failed ({}); region filter cannot be applied",
+                e
+            );
+            None
+        }
+    }
+}
+
+/// Place names to try, most specific first.
+fn emma_search_terms(address: &NominatimAddress) -> Vec<String> {
+    let mut terms: Vec<String> = Vec::new();
 
     if let Some(city) = &address.city {
-        search_terms.push(city.clone());
-        search_terms.push(format!("Stadt {}", city));
+        terms.push(city.clone());
+        terms.push(format!("Stadt {}", city));
     }
     if let Some(town) = &address.town {
-        search_terms.push(town.clone());
+        terms.push(town.clone());
     }
     if let Some(county) = &address.county {
-        search_terms.push(county.clone());
-        search_terms.push(format!("Kreis {}", county));
+        terms.push(county.clone());
+        terms.push(format!("Kreis {}", county));
     }
     if let Some(state) = &address.state {
-        search_terms.push(state.clone());
+        terms.push(state.clone());
     }
 
-    // Fetch MeteoAlarm codenames
-    let codenames_url =
-        "https://raw.githubusercontent.com/ktrue/Meteoalarm-warning/master/meteoalarm-codenames.json";
-    let codenames_response = http_client().ok()?.get(codenames_url).send().await.ok()?;
-    let codenames: MeteoAlarmCodenames = codenames_response.json().await.ok()?;
+    terms
+}
 
-    // Find matching EMMA_ID for this country
+/// The matching itself, split from the fetch so it is testable without a network.
+fn match_emma_id(
+    address: &NominatimAddress,
+    country_code: &str,
+    codenames: &MeteoAlarmCodenames,
+) -> Option<String> {
     let country_prefix = country_code.to_uppercase();
+    let search_terms = emma_search_terms(address);
+
     for search_term in &search_terms {
         let search_lower = search_term.to_lowercase();
         for (emma_id, name) in &codenames.codes {
@@ -255,25 +291,53 @@ async fn resolve_user_emma_id(latitude: f64, longitude: f64, country_code: &str)
         }
     }
 
-    tracing::debug!("Could not resolve EMMA_ID for location");
+    tracing::warn!(
+        "No EMMA_ID matched {:?} in {}; the national feed will render unfiltered",
+        search_terms,
+        country_prefix
+    );
     None
 }
 
 /// Fetches active weather alerts from MeteoAlarm for European locations.
-async fn fetch_meteoalarm_alerts(
-    latitude: f64,
-    longitude: f64,
-    country: &str,
-) -> Result<Vec<Alert>> {
-    let (slug, country_code) = match get_meteoalarm_info(country) {
+async fn fetch_meteoalarm_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>> {
+    // Failing to determine the country is an error, not an absence of alerts.
+    // Returning Ok(vec![]) here would be indistinguishable from a quiet day,
+    // which is the silent-failure pattern this whole path is being fixed for.
+    // The warn! stays because consumers do swallow errors.
+    let address = match reverse_geocode(latitude, longitude).await {
+        Ok(address) => address,
+        Err(e) => {
+            tracing::warn!(
+                "Reverse geocoding failed ({}); cannot determine country for MeteoAlarm",
+                e
+            );
+            return Err(e);
+        }
+    };
+
+    let iso_code = match address.country_code.as_deref() {
+        Some(iso_code) => iso_code,
+        None => {
+            tracing::warn!("Reverse geocode returned no country code; cannot select a feed");
+            return Err(Error::LocationDetection);
+        }
+    };
+
+    // Local-language name, for logs only; every lookup below keys on the code.
+    let country = address.country.as_deref().unwrap_or(iso_code);
+
+    // Not covered is a real absence: the country exists, MeteoAlarm has no feed
+    // for it. That stays Ok(vec![]).
+    let (slug, country_code) = match get_meteoalarm_info(iso_code) {
         Some(info) => info,
         None => {
-            tracing::debug!("Country '{}' not covered by MeteoAlarm", country);
+            tracing::debug!("{} ({}) is not covered by MeteoAlarm", country, iso_code);
             return Ok(vec![]);
         }
     };
 
-    let user_emma_id = resolve_user_emma_id(latitude, longitude, country_code).await;
+    let user_emma_id = resolve_user_emma_id(&address, country_code).await;
 
     let url = format!(
         "https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-{}",
@@ -291,11 +355,20 @@ async fn fetch_meteoalarm_alerts(
 
     let alerts = meteoalarm_alerts_from_feed(feed, &user_emma_id);
 
-    tracing::debug!(
-        "Fetched {} alert(s) from MeteoAlarm ({})",
-        alerts.len(),
-        country
-    );
+    match &user_emma_id {
+        Some(emma_id) => tracing::debug!(
+            "Fetched {} alert(s) from MeteoAlarm ({}), filtered to {}",
+            alerts.len(),
+            country,
+            emma_id
+        ),
+        None => tracing::warn!(
+            "Fetched {} alert(s) from MeteoAlarm ({}), UNFILTERED - no EMMA_ID \
+            for this location, so these are national alerts, not local ones",
+            alerts.len(),
+            country
+        ),
+    }
     Ok(alerts)
 }
 
@@ -1222,5 +1295,125 @@ mod tests {
         assert_eq!(detect_region(51.51, -0.13), Region::Europe, "London");
         assert_eq!(detect_region(-33.87, 151.21), Region::Australia, "Sydney");
         assert_eq!(detect_region(35.68, 139.65), Region::Unknown, "Tokyo");
+    }
+
+    fn address(city: Option<&str>, county: Option<&str>, state: Option<&str>) -> NominatimAddress {
+        NominatimAddress {
+            country: Some("Polska".to_string()),
+            country_code: Some("pl".to_string()),
+            city: city.map(str::to_string),
+            town: None,
+            county: county.map(str::to_string),
+            state: state.map(str::to_string),
+        }
+    }
+
+    fn codenames(pairs: &[(&str, &str)]) -> MeteoAlarmCodenames {
+        MeteoAlarmCodenames {
+            codes: pairs
+                .iter()
+                .map(|(id, name)| (id.to_string(), name.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn emma_search_terms_are_most_specific_first() {
+        let terms = emma_search_terms(&address(
+            Some("Warsaw"),
+            Some("Warsaw County"),
+            Some("Masovian"),
+        ));
+        assert_eq!(
+            terms,
+            vec![
+                "Warsaw",
+                "Stadt Warsaw",
+                "Warsaw County",
+                "Kreis Warsaw County",
+                "Masovian",
+            ]
+        );
+    }
+
+    #[test]
+    fn match_emma_id_ignores_other_countries() {
+        // A German codename must not match a Polish query, which is the prefix
+        // check that the old bounding-box country guess kept getting wrong.
+        let codes = codenames(&[("DE123", "Warsaw")]);
+        assert_eq!(
+            match_emma_id(&address(Some("Warsaw"), None, None), "PL", &codes),
+            None
+        );
+    }
+
+    #[test]
+    fn match_emma_id_matches_on_city() {
+        let codes = codenames(&[("PL1465", "Warsaw"), ("DE123", "Berlin")]);
+        assert_eq!(
+            match_emma_id(&address(Some("Warsaw"), None, None), "PL", &codes),
+            Some("PL1465".to_string())
+        );
+    }
+
+    #[test]
+    fn match_emma_id_falls_back_to_state() {
+        let codes = codenames(&[("PL0100", "Masovian")]);
+        assert_eq!(
+            match_emma_id(
+                &address(Some("Nowhere"), None, Some("Masovian")),
+                "PL",
+                &codes
+            ),
+            Some("PL0100".to_string())
+        );
+    }
+
+    #[test]
+    fn match_emma_id_returns_none_when_nothing_matches() {
+        let codes = codenames(&[("PL1465", "Warsaw")]);
+        assert_eq!(
+            match_emma_id(&address(Some("Nowhere"), None, None), "PL", &codes),
+            None
+        );
+    }
+
+    #[test]
+    fn emma_search_terms_includes_town() {
+        // Nominatim returns `town` instead of `city` for smaller places, so the
+        // city-less path has to produce terms too.
+        let address = NominatimAddress {
+            country: Some("Polska".to_string()),
+            country_code: Some("pl".to_string()),
+            city: None,
+            town: Some("Sopot".to_string()),
+            county: None,
+            state: None,
+        };
+        assert_eq!(emma_search_terms(&address), vec!["Sopot"]);
+    }
+
+    #[test]
+    fn match_emma_id_matches_real_local_language_pair() {
+        // Regression guard. MeteoAlarm's PL1465 is "Warszawa"; if Nominatim is
+        // ever asked for English names it answers "Warsaw", this stops matching,
+        // and the whole Polish feed renders unfiltered. Every other fixture here
+        // is English on both sides, which is what let that slip through green.
+        let codes = codenames(&[("PL1465", "Warszawa")]);
+        assert_eq!(
+            match_emma_id(&address(Some("Warszawa"), None, None), "PL", &codes),
+            Some("PL1465".to_string())
+        );
+    }
+
+    #[test]
+    fn match_emma_id_matches_when_search_term_contains_codename() {
+        // Nominatim's county ("Warsaw County") is longer than the codename
+        // ("Warsaw"), so the containment runs the other direction.
+        let codes = codenames(&[("PL1465", "Warsaw")]);
+        assert_eq!(
+            match_emma_id(&address(None, Some("Warsaw County"), None), "PL", &codes),
+            Some("PL1465".to_string())
+        );
     }
 }

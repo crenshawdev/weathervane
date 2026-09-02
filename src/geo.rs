@@ -3,7 +3,7 @@
 use serde::Deserialize;
 
 use crate::client::http_client;
-use crate::error::Result;
+use crate::error::{Error, ParseKind, Result};
 
 /// Geographic region for alert provider and AQI standard selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,47 +226,55 @@ pub(crate) fn get_eccc_office_codes(lat: f64, lon: f64) -> Vec<&'static str> {
     offices
 }
 
-/// Maps country name to (MeteoAlarm feed slug, ISO country code).
-/// Returns None if country is not covered by MeteoAlarm.
-pub(crate) fn get_meteoalarm_info(country: &str) -> Option<(&'static str, &'static str)> {
-    match country.to_lowercase().as_str() {
-        "austria" => Some(("austria", "AT")),
-        "belgium" => Some(("belgium", "BE")),
-        "bosnia and herzegovina" => Some(("bosnia-herzegovina", "BA")),
-        "bulgaria" => Some(("bulgaria", "BG")),
-        "croatia" => Some(("croatia", "HR")),
-        "cyprus" => Some(("cyprus", "CY")),
-        "czechia" | "czech republic" => Some(("czechia", "CZ")),
-        "denmark" => Some(("denmark", "DK")),
-        "estonia" => Some(("estonia", "EE")),
-        "finland" => Some(("finland", "FI")),
-        "france" => Some(("france", "FR")),
-        "germany" => Some(("germany", "DE")),
-        "greece" => Some(("greece", "GR")),
-        "hungary" => Some(("hungary", "HU")),
-        "iceland" => Some(("iceland", "IS")),
-        "ireland" => Some(("ireland", "IE")),
-        "israel" => Some(("israel", "IL")),
-        "italy" => Some(("italy", "IT")),
-        "latvia" => Some(("latvia", "LV")),
-        "lithuania" => Some(("lithuania", "LT")),
-        "luxembourg" => Some(("luxembourg", "LU")),
-        "malta" => Some(("malta", "MT")),
-        "moldova" => Some(("moldova", "MD")),
-        "montenegro" => Some(("montenegro", "ME")),
-        "netherlands" => Some(("netherlands", "NL")),
-        "north macedonia" | "macedonia" => Some(("north-macedonia", "MK")),
-        "norway" => Some(("norway", "NO")),
-        "poland" => Some(("poland", "PL")),
-        "portugal" => Some(("portugal", "PT")),
-        "romania" => Some(("romania", "RO")),
-        "serbia" => Some(("serbia", "RS")),
-        "slovakia" => Some(("slovakia", "SK")),
-        "slovenia" => Some(("slovenia", "SI")),
-        "spain" => Some(("spain", "ES")),
-        "sweden" => Some(("sweden", "SE")),
-        "switzerland" => Some(("switzerland", "CH")),
-        "united kingdom" | "uk" => Some(("united-kingdom", "UK")),
+/// Maps an ISO 3166-1 alpha-2 country code to that country's MeteoAlarm feed
+/// slug and EMMA_ID prefix. Returns None if the country is not covered.
+///
+/// Keyed on the code rather than the country name because the name arrives from
+/// Nominatim in the local language, and asking Nominatim for English instead
+/// breaks the EMMA_ID match against MeteoAlarm's own local-language codename
+/// list (`PL1465` is "Warszawa", not "Warsaw").
+///
+/// The prefix is the uppercased code everywhere except the United Kingdom,
+/// whose alerts use `UK` rather than ISO `GB`.
+pub(crate) fn get_meteoalarm_info(country_code: &str) -> Option<(&'static str, &'static str)> {
+    match country_code.to_lowercase().as_str() {
+        "at" => Some(("austria", "AT")),
+        "ba" => Some(("bosnia-herzegovina", "BA")),
+        "be" => Some(("belgium", "BE")),
+        "bg" => Some(("bulgaria", "BG")),
+        "ch" => Some(("switzerland", "CH")),
+        "cy" => Some(("cyprus", "CY")),
+        "cz" => Some(("czechia", "CZ")),
+        "de" => Some(("germany", "DE")),
+        "dk" => Some(("denmark", "DK")),
+        "ee" => Some(("estonia", "EE")),
+        "es" => Some(("spain", "ES")),
+        "fi" => Some(("finland", "FI")),
+        "fr" => Some(("france", "FR")),
+        "gb" => Some(("united-kingdom", "UK")),
+        "gr" => Some(("greece", "GR")),
+        "hr" => Some(("croatia", "HR")),
+        "hu" => Some(("hungary", "HU")),
+        "ie" => Some(("ireland", "IE")),
+        "il" => Some(("israel", "IL")),
+        "is" => Some(("iceland", "IS")),
+        "it" => Some(("italy", "IT")),
+        "lt" => Some(("lithuania", "LT")),
+        "lu" => Some(("luxembourg", "LU")),
+        "lv" => Some(("latvia", "LV")),
+        "md" => Some(("moldova", "MD")),
+        "me" => Some(("montenegro", "ME")),
+        "mk" => Some(("north-macedonia", "MK")),
+        "mt" => Some(("malta", "MT")),
+        "nl" => Some(("netherlands", "NL")),
+        "no" => Some(("norway", "NO")),
+        "pl" => Some(("poland", "PL")),
+        "pt" => Some(("portugal", "PT")),
+        "ro" => Some(("romania", "RO")),
+        "rs" => Some(("serbia", "RS")),
+        "se" => Some(("sweden", "SE")),
+        "si" => Some(("slovenia", "SI")),
+        "sk" => Some(("slovakia", "SK")),
         _ => None,
     }
 }
@@ -280,6 +288,13 @@ pub(crate) struct NominatimResponse {
 /// Address details from Nominatim.
 #[derive(Debug, Deserialize)]
 pub(crate) struct NominatimAddress {
+    /// Local-language country name. Display only - `country_code` is what the
+    /// MeteoAlarm lookup keys on, because Nominatim is deliberately not asked
+    /// for English names.
+    pub country: Option<String>,
+    /// ISO 3166-1 alpha-2, lowercase. Language-independent, which is why the
+    /// feed lookup uses it.
+    pub country_code: Option<String>,
     pub city: Option<String>,
     pub town: Option<String>,
     pub county: Option<String>,
@@ -293,80 +308,37 @@ pub(crate) struct MeteoAlarmCodenames {
     pub codes: std::collections::HashMap<String, String>,
 }
 
-/// Detects country from coordinates using reverse geocoding.
-pub(crate) async fn detect_country_from_coords(latitude: f64, longitude: f64) -> Result<String> {
+/// Reverse-geocodes a coordinate to an address.
+///
+/// One call serves both the country (MeteoAlarm feed selection) and the place
+/// names (EMMA_ID region matching), which were previously two separate lookups
+/// of the same point.
+///
+/// No `accept-language` is requested on purpose. The MeteoAlarm codename list
+/// is in local language - `PL1465` is "Warszawa", not "Warsaw" - so asking for
+/// English names would break every EMMA_ID match in Europe. The country is
+/// identified by `country_code` instead, which carries no language at all.
+pub(crate) async fn reverse_geocode(latitude: f64, longitude: f64) -> Result<NominatimAddress> {
     let url = format!(
-        "https://geocoding-api.open-meteo.com/v1/search?name=&latitude={}&longitude={}&count=1",
+        "https://nominatim.openstreetmap.org/reverse?lat={}&lon={}&format=json",
         latitude, longitude
     );
+    let body = http_client()?
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
 
-    let response = http_client()?.get(&url).send().await;
-    if let Ok(resp) = response {
-        if let Ok(data) = resp.json::<GeocodingResponseMinimal>().await {
-            if let Some(results) = data.results {
-                if let Some(first) = results.first() {
-                    if let Some(country) = &first.country {
-                        return Ok(country.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    // Fallback: approximate from European bounding boxes
-    let country = approximate_european_country(latitude, longitude);
-    tracing::debug!(
-        "Reverse geocoding failed, approximated country as '{}' from bounding boxes",
-        country
-    );
-    Ok(country.to_string())
+    address_from_json(&body)
 }
 
-/// Minimal geocoding response for country detection only.
-#[derive(Debug, Deserialize)]
-struct GeocodingResponseMinimal {
-    results: Option<Vec<GeocodingResultMinimal>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GeocodingResultMinimal {
-    country: Option<String>,
-}
-
-/// Approximates country from coordinates using bounding boxes.
-/// Used as fallback when reverse geocoding fails.
-fn approximate_european_country(lat: f64, lon: f64) -> &'static str {
-    if (47.3..=55.1).contains(&lat) && (5.9..=15.0).contains(&lon) {
-        "Germany"
-    } else if (41.3..=51.1).contains(&lat) && (-5.1..=9.6).contains(&lon) {
-        "France"
-    } else if (36.0..=43.8).contains(&lat) && (-9.5..=3.3).contains(&lon) {
-        "Spain"
-    } else if (36.6..=47.1).contains(&lat) && (6.6..=18.5).contains(&lon) {
-        "Italy"
-    } else if (49.9..=61.0).contains(&lat) && (-8.6..=1.8).contains(&lon) {
-        "United Kingdom"
-    } else if (50.8..=53.5).contains(&lat) && (3.4..=7.2).contains(&lon) {
-        "Netherlands"
-    } else if (49.5..=51.5).contains(&lat) && (2.5..=6.4).contains(&lon) {
-        "Belgium"
-    } else if (46.4..=49.0).contains(&lat) && (5.9..=10.5).contains(&lon) {
-        "Switzerland"
-    } else if (46.4..=49.0).contains(&lat) && (9.5..=17.2).contains(&lon) {
-        "Austria"
-    } else if (49.0..=54.9).contains(&lat) && (14.1..=24.2).contains(&lon) {
-        "Poland"
-    } else if (55.0..=69.1).contains(&lat) && (4.5..=31.1).contains(&lon) {
-        if lon < 10.0 {
-            "Norway"
-        } else if lon < 24.2 {
-            "Sweden"
-        } else {
-            "Finland"
-        }
-    } else {
-        "Unknown"
-    }
+/// Split from the request so the decode is unit-testable without a network.
+fn address_from_json(body: &str) -> Result<NominatimAddress> {
+    let response: NominatimResponse =
+        serde_json::from_str(body).map_err(|_| Error::Parse(ParseKind::Json))?;
+    response.address.ok_or(Error::LocationDetection)
 }
 
 #[cfg(test)]
@@ -501,134 +473,75 @@ mod tests {
     }
 
     #[test]
-    fn get_meteoalarm_info_maps_representative_countries() {
-        assert_eq!(get_meteoalarm_info("Austria"), Some(("austria", "AT")));
-        assert_eq!(get_meteoalarm_info("Belgium"), Some(("belgium", "BE")));
-        assert_eq!(
-            get_meteoalarm_info("Bosnia and Herzegovina"),
-            Some(("bosnia-herzegovina", "BA"))
-        );
-        assert_eq!(get_meteoalarm_info("Bulgaria"), Some(("bulgaria", "BG")));
-        assert_eq!(get_meteoalarm_info("Croatia"), Some(("croatia", "HR")));
-        assert_eq!(get_meteoalarm_info("Cyprus"), Some(("cyprus", "CY")));
-        assert_eq!(get_meteoalarm_info("Denmark"), Some(("denmark", "DK")));
-        assert_eq!(get_meteoalarm_info("Estonia"), Some(("estonia", "EE")));
-        assert_eq!(get_meteoalarm_info("Finland"), Some(("finland", "FI")));
-        assert_eq!(get_meteoalarm_info("France"), Some(("france", "FR")));
-        assert_eq!(get_meteoalarm_info("Germany"), Some(("germany", "DE")));
-        assert_eq!(get_meteoalarm_info("Greece"), Some(("greece", "GR")));
-        assert_eq!(get_meteoalarm_info("Hungary"), Some(("hungary", "HU")));
-        assert_eq!(get_meteoalarm_info("Iceland"), Some(("iceland", "IS")));
-        assert_eq!(get_meteoalarm_info("Ireland"), Some(("ireland", "IE")));
-        assert_eq!(get_meteoalarm_info("Israel"), Some(("israel", "IL")));
-        assert_eq!(get_meteoalarm_info("Italy"), Some(("italy", "IT")));
-        assert_eq!(get_meteoalarm_info("Latvia"), Some(("latvia", "LV")));
-        assert_eq!(get_meteoalarm_info("Lithuania"), Some(("lithuania", "LT")));
-        assert_eq!(
-            get_meteoalarm_info("Luxembourg"),
-            Some(("luxembourg", "LU"))
-        );
-        assert_eq!(get_meteoalarm_info("Malta"), Some(("malta", "MT")));
-        assert_eq!(get_meteoalarm_info("Moldova"), Some(("moldova", "MD")));
-        assert_eq!(
-            get_meteoalarm_info("Montenegro"),
-            Some(("montenegro", "ME"))
-        );
-        assert_eq!(
-            get_meteoalarm_info("Netherlands"),
-            Some(("netherlands", "NL"))
-        );
-        assert_eq!(get_meteoalarm_info("Norway"), Some(("norway", "NO")));
-        assert_eq!(get_meteoalarm_info("Poland"), Some(("poland", "PL")));
-        assert_eq!(get_meteoalarm_info("Portugal"), Some(("portugal", "PT")));
-        assert_eq!(get_meteoalarm_info("Romania"), Some(("romania", "RO")));
-        assert_eq!(get_meteoalarm_info("Serbia"), Some(("serbia", "RS")));
-        assert_eq!(get_meteoalarm_info("Slovakia"), Some(("slovakia", "SK")));
-        assert_eq!(get_meteoalarm_info("Slovenia"), Some(("slovenia", "SI")));
-        assert_eq!(get_meteoalarm_info("Spain"), Some(("spain", "ES")));
-        assert_eq!(get_meteoalarm_info("Sweden"), Some(("sweden", "SE")));
-        assert_eq!(
-            get_meteoalarm_info("Switzerland"),
-            Some(("switzerland", "CH"))
-        );
+    fn get_meteoalarm_info_maps_every_covered_code() {
+        // Every arm of the match, so a dropped country shows up here.
+        for (code, slug, prefix) in [
+            ("at", "austria", "AT"),
+            ("ba", "bosnia-herzegovina", "BA"),
+            ("be", "belgium", "BE"),
+            ("bg", "bulgaria", "BG"),
+            ("ch", "switzerland", "CH"),
+            ("cy", "cyprus", "CY"),
+            ("cz", "czechia", "CZ"),
+            ("de", "germany", "DE"),
+            ("dk", "denmark", "DK"),
+            ("ee", "estonia", "EE"),
+            ("es", "spain", "ES"),
+            ("fi", "finland", "FI"),
+            ("fr", "france", "FR"),
+            ("gb", "united-kingdom", "UK"),
+            ("gr", "greece", "GR"),
+            ("hr", "croatia", "HR"),
+            ("hu", "hungary", "HU"),
+            ("ie", "ireland", "IE"),
+            ("il", "israel", "IL"),
+            ("is", "iceland", "IS"),
+            ("it", "italy", "IT"),
+            ("lt", "lithuania", "LT"),
+            ("lu", "luxembourg", "LU"),
+            ("lv", "latvia", "LV"),
+            ("md", "moldova", "MD"),
+            ("me", "montenegro", "ME"),
+            ("mk", "north-macedonia", "MK"),
+            ("mt", "malta", "MT"),
+            ("nl", "netherlands", "NL"),
+            ("no", "norway", "NO"),
+            ("pl", "poland", "PL"),
+            ("pt", "portugal", "PT"),
+            ("ro", "romania", "RO"),
+            ("rs", "serbia", "RS"),
+            ("se", "sweden", "SE"),
+            ("si", "slovenia", "SI"),
+            ("sk", "slovakia", "SK"),
+        ] {
+            assert_eq!(get_meteoalarm_info(code), Some((slug, prefix)), "{code}");
+        }
     }
 
     #[test]
     fn get_meteoalarm_info_case_insensitive() {
         // Proves the .to_lowercase() normalization at the top of the match.
-        assert_eq!(get_meteoalarm_info("france"), Some(("france", "FR")));
-        assert_eq!(get_meteoalarm_info("FRANCE"), Some(("france", "FR")));
-        assert_eq!(get_meteoalarm_info("FrAnCe"), Some(("france", "FR")));
+        // Nominatim sends lowercase, but nothing in the type system says so.
+        assert_eq!(get_meteoalarm_info("pl"), Some(("poland", "PL")));
+        assert_eq!(get_meteoalarm_info("PL"), Some(("poland", "PL")));
+        assert_eq!(get_meteoalarm_info("Pl"), Some(("poland", "PL")));
     }
 
     #[test]
-    fn get_meteoalarm_info_alias_arms() {
-        // Both sides of each alias pair must map to the same (slug, ISO) tuple.
-        assert_eq!(
-            get_meteoalarm_info("czech republic"),
-            Some(("czechia", "CZ"))
-        );
-        assert_eq!(get_meteoalarm_info("czechia"), Some(("czechia", "CZ")));
-
-        assert_eq!(
-            get_meteoalarm_info("north macedonia"),
-            Some(("north-macedonia", "MK"))
-        );
-        assert_eq!(
-            get_meteoalarm_info("macedonia"),
-            Some(("north-macedonia", "MK"))
-        );
-
-        assert_eq!(
-            get_meteoalarm_info("united kingdom"),
-            Some(("united-kingdom", "UK"))
-        );
-        assert_eq!(get_meteoalarm_info("uk"), Some(("united-kingdom", "UK")));
+    fn get_meteoalarm_info_uk_prefix_is_not_its_iso_code() {
+        // The one country where the EMMA_ID prefix and the ISO code differ, so
+        // "uppercase the code" is not a valid shortcut for this table.
+        assert_eq!(get_meteoalarm_info("gb"), Some(("united-kingdom", "UK")));
+        assert_eq!(get_meteoalarm_info("uk"), None);
     }
 
     #[test]
     fn get_meteoalarm_info_unknown_returns_none() {
         // Proves the `_ => None` fallback for non-covered countries.
-        assert_eq!(get_meteoalarm_info("United States"), None);
-        assert_eq!(get_meteoalarm_info("Japan"), None);
+        assert_eq!(get_meteoalarm_info("us"), None);
+        assert_eq!(get_meteoalarm_info("jp"), None);
         assert_eq!(get_meteoalarm_info(""), None);
-        assert_eq!(get_meteoalarm_info("not-a-country"), None);
-    }
-
-    #[test]
-    fn approximate_european_country_maps_bounding_boxes() {
-        // These coordinates assert the CURRENT branch-order cascade at
-        // approximate_european_country (Germany -> France -> Spain -> Italy ->
-        // UK -> Netherlands -> Belgium -> Switzerland -> Austria -> Poland),
-        // not real-world geography. Brussels (50.85, 4.35) actually falls into
-        // the France branch first, and Zurich (47.38, 8.55) actually falls into
-        // the Germany branch first, so Belgium and Switzerland use branch-order-
-        // safe in-box points instead of their real capital-city coordinates.
-        assert_eq!(approximate_european_country(52.5, 13.4), "Germany"); // Berlin
-        assert_eq!(approximate_european_country(48.85, 2.35), "France"); // Paris
-        assert_eq!(approximate_european_country(40.42, -3.70), "Spain"); // Madrid
-        assert_eq!(approximate_european_country(41.90, 12.50), "Italy"); // Rome
-        assert_eq!(approximate_european_country(51.51, -0.13), "United Kingdom"); // London
-        assert_eq!(approximate_european_country(52.37, 4.89), "Netherlands"); // Amsterdam
-        assert_eq!(approximate_european_country(51.20, 3.20), "Belgium"); // branch-order-safe point
-        assert_eq!(approximate_european_country(47.20, 10.00), "Switzerland"); // branch-order-safe point
-        assert_eq!(approximate_european_country(48.21, 16.37), "Austria"); // Vienna
-        assert_eq!(approximate_european_country(52.23, 21.01), "Poland"); // Warsaw
-    }
-
-    #[test]
-    fn approximate_european_country_nordic_sub_branches() {
-        // Nordic outer box (55.0..=69.1, 4.5..=31.1) has three lon sub-branches.
-        assert_eq!(approximate_european_country(59.91, 5.32), "Norway"); // lon < 10
-        assert_eq!(approximate_european_country(59.33, 18.06), "Sweden"); // 10 <= lon < 24.2
-        assert_eq!(approximate_european_country(60.17, 24.94), "Finland"); // lon >= 24.2
-    }
-
-    #[test]
-    fn approximate_european_country_unknown_outside_boxes() {
-        assert_eq!(approximate_european_country(0.0, 0.0), "Unknown"); // Gulf of Guinea
-        assert_eq!(approximate_european_country(-33.87, 151.21), "Unknown"); // Sydney
-        assert_eq!(approximate_european_country(35.68, 139.65), "Unknown"); // Tokyo
+        assert_eq!(get_meteoalarm_info("not-a-code"), None);
     }
 
     #[test]
@@ -639,5 +552,56 @@ mod tests {
         assert_eq!(detect_region(44.30, -69.78), Region::Us, "Augusta, ME");
         // Maine else-arm band: lon -67.0..-66.0.
         assert_eq!(detect_region(45.20, -66.50), Region::Us, "Eastport, ME");
+    }
+
+    #[test]
+    fn address_from_json_extracts_local_names_and_country_code() {
+        // A real Nominatim reply for Warsaw with no accept-language requested.
+        let body = r#"{"address":{"country":"Polska","country_code":"pl","city":"Warszawa","state":"wojew\u00f3dztwo mazowieckie"}}"#;
+        let address = address_from_json(body).unwrap();
+        assert_eq!(address.country_code.as_deref(), Some("pl"));
+        assert_eq!(address.country.as_deref(), Some("Polska"));
+        assert_eq!(address.city.as_deref(), Some("Warszawa"));
+        assert_eq!(
+            address.state.as_deref(),
+            Some("wojew\u{f3}dztwo mazowieckie")
+        );
+        assert_eq!(address.town, None);
+    }
+
+    #[test]
+    fn address_from_json_country_code_matches_meteoalarm_keys() {
+        // The decoded country_code must be a key get_meteoalarm_info recognises,
+        // whatever language the country name came back in.
+        for (body, expected) in [
+            (r#"{"address":{"country_code":"pl"}}"#, ("poland", "PL")),
+            (r#"{"address":{"country_code":"cz"}}"#, ("czechia", "CZ")),
+            (
+                r#"{"address":{"country_code":"gb"}}"#,
+                ("united-kingdom", "UK"),
+            ),
+        ] {
+            let address = address_from_json(body).unwrap();
+            assert_eq!(
+                get_meteoalarm_info(address.country_code.as_deref().unwrap()),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn address_from_json_missing_address_is_location_detection_error() {
+        assert!(matches!(
+            address_from_json(r#"{"error":"Unable to geocode"}"#),
+            Err(Error::LocationDetection)
+        ));
+    }
+
+    #[test]
+    fn address_from_json_malformed_is_parse_error() {
+        assert!(matches!(
+            address_from_json("not json"),
+            Err(Error::Parse(ParseKind::Json))
+        ));
     }
 }
