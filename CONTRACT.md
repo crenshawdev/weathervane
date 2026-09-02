@@ -171,10 +171,10 @@ the provider sends none (BOM), per the missing-strings rule.
 ```
 
 `region_filtered` is `false` only when a MeteoAlarm national feed was returned
-unfiltered: no EMMA_ID resolved for the location, or the feed carries no
-EMMA_ID geocodes to filter on (France tags entries with NUTS3), so the entries
-are national, not local. NWS, ECCC and BOM filter by point, polygon and
-geohash, and an empty result is trivially filtered, so all of those are `true`.
+unfiltered because no region could be matched for the location, by EMMA_ID or
+by area name, so the entries are national, not local. NWS, ECCC and BOM filter
+by point, polygon and geohash, and an empty result is trivially filtered, so
+all of those are `true`.
 
 ### PollenData
 Inside CAMS European coverage:

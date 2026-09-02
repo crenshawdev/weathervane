@@ -300,12 +300,14 @@ pub(crate) struct NominatimAddress {
     pub country_code: Option<String>,
     pub city: Option<String>,
     pub town: Option<String>,
+    pub village: Option<String>,
+    pub municipality: Option<String>,
     pub county: Option<String>,
     pub state: Option<String>,
 }
 
 /// MeteoAlarm codenames mapping (EMMA_ID -> region name).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(transparent)]
 pub(crate) struct MeteoAlarmCodenames {
     pub codes: std::collections::HashMap<String, String>,
@@ -613,6 +615,16 @@ mod tests {
             Some("wojew\u{f3}dztwo mazowieckie")
         );
         assert_eq!(address.town, None);
+    }
+
+    #[test]
+    fn address_from_json_reads_village_and_municipality() {
+        // Lisbon and Athens replies carry these alongside city; small places
+        // carry them instead of it.
+        let body = r#"{"address":{"country_code":"pt","city":"Lisboa","village":"Arroios","municipality":"Lisboa","county":"Lisboa"}}"#;
+        let address = address_from_json(body).unwrap();
+        assert_eq!(address.village.as_deref(), Some("Arroios"));
+        assert_eq!(address.municipality.as_deref(), Some("Lisboa"));
     }
 
     #[test]

@@ -141,13 +141,22 @@ otherwise know:
   `cap:areaDesc`, NWS `areaDesc` (a `;`-separated county list), the containing
   ECCC polygon's `areaDesc`. BOM sends none, so it is `""`.
 - `region_filtered` -- `false` only when a MeteoAlarm national feed was returned
-  unfiltered: no EMMA_ID resolved for the location, or the feed carries no
-  EMMA_ID geocodes to filter on (France tags entries with NUTS3), so the entries
-  are national, not local. NWS, ECCC and BOM filter by point, polygon and
-  geohash, and an empty result is trivially filtered, so all of those are `true`.
+  unfiltered because no region could be matched for the location, by EMMA_ID or
+  by area name, so the entries are national, not local. NWS, ECCC and BOM filter
+  by point, polygon and geohash, and an empty result is trivially filtered, so
+  all of those are `true`.
 
-When an EMMA_ID did resolve, MeteoAlarm entries carrying no geocode are dropped
-rather than shown, since they cannot be placed in any region.
+MeteoAlarm filtering runs in two stages. First the location's EMMA_ID, resolved
+from the codename list, filters a feed whose entries are EMMA_ID-tagged; this is
+exact, and since the feed only lists regions that are alerting it is the only
+stage that can tell a quiet day from a miss. When that produces no usable filter
+(no EMMA_ID resolved, or the feed tags entries under another scheme, or not at
+all), the location's place names are matched against the feed's own `areaDesc`
+values: diacritics folded, administrative affixes such as "Grad" and "region"
+dropped, exact match preferred, and a place name that fits more than one region
+is treated as a miss rather than a guess. When an EMMA_ID did resolve against an
+EMMA_ID-tagged feed, entries carrying no geocode are dropped rather than shown,
+since they cannot be placed in any region.
 
 ### `fetch_alerts`
 

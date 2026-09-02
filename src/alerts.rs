@@ -3,6 +3,7 @@
 //! Weather alerts from regional providers (NWS, MeteoAlarm, ECCC, BOM).
 
 use std::collections::HashSet;
+use std::sync::RwLock;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -75,12 +76,11 @@ pub struct AlertEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlertReport {
     pub alerts: Vec<AlertEntry>,
-    /// `false` only when a MeteoAlarm national feed was returned unfiltered:
-    /// no EMMA_ID resolved for the location, or the feed carries no EMMA_ID
-    /// geocodes to filter on (France tags entries with NUTS3), so the entries
-    /// are national, not local. NWS, ECCC and BOM filter by point, polygon and
-    /// geohash respectively, and an empty result is trivially filtered, so all
-    /// of those are `true`.
+    /// `false` only when a MeteoAlarm national feed was returned unfiltered
+    /// because no region could be matched for the location, by EMMA_ID or by
+    /// area name, so the entries are national, not local. NWS, ECCC and BOM
+    /// filter by point, polygon and geohash respectively, and an empty result
+    /// is trivially filtered, so all of those are `true`.
     pub region_filtered: bool,
 }
 
@@ -260,9 +260,36 @@ async fn resolve_user_emma_id(address: &NominatimAddress, country_code: &str) ->
     match_emma_id(address, country_code, &codenames)
 }
 
+/// The codename list, fetched once per process. It is 72 KB from a third
+/// party's `master` branch and changes rarely, so refetching it on every
+/// call was the largest request in the whole alerts path.
+static CODENAMES_CACHE: RwLock<Option<MeteoAlarmCodenames>> = RwLock::new(None);
+
+fn cached_codenames() -> Option<MeteoAlarmCodenames> {
+    CODENAMES_CACHE.read().ok()?.clone()
+}
+
+fn cache_codenames(codenames: &MeteoAlarmCodenames) {
+    if let Ok(mut guard) = CODENAMES_CACHE.write() {
+        *guard = Some(codenames.clone());
+    }
+}
+
+/// Cached front for the network fetch, in the shape of `STATION_CACHE` and
+/// the geocode cache: filled on the first success, failures not cached so a
+/// transient miss retries on the next call.
+async fn fetch_meteoalarm_codenames() -> Option<MeteoAlarmCodenames> {
+    if let Some(codenames) = cached_codenames() {
+        return Some(codenames);
+    }
+    let codenames = fetch_meteoalarm_codenames_uncached().await?; // no lock held across .await
+    cache_codenames(&codenames);
+    Some(codenames)
+}
+
 /// Split from the matching so its three failure points get distinct messages
 /// rather than collapsing into one silent `None`.
-async fn fetch_meteoalarm_codenames() -> Option<MeteoAlarmCodenames> {
+async fn fetch_meteoalarm_codenames_uncached() -> Option<MeteoAlarmCodenames> {
     const CODENAMES_URL: &str =
         "https://raw.githubusercontent.com/ktrue/Meteoalarm-warning/master/meteoalarm-codenames.json";
 
@@ -311,6 +338,12 @@ fn emma_search_terms(address: &NominatimAddress) -> Vec<String> {
     if let Some(town) = &address.town {
         terms.push(town.clone());
     }
+    if let Some(village) = &address.village {
+        terms.push(village.clone());
+    }
+    if let Some(municipality) = &address.municipality {
+        terms.push(municipality.clone());
+    }
     if let Some(county) = &address.county {
         terms.push(county.clone());
         terms.push(format!("Kreis {}", county));
@@ -358,7 +391,7 @@ fn match_emma_id(
     }
 
     tracing::warn!(
-        "No EMMA_ID matched {:?} in {}; the national feed will render unfiltered",
+        "No EMMA_ID matched {:?} in {}; will try the feed's own area names",
         search_terms,
         country_prefix
     );
@@ -400,6 +433,113 @@ fn rank_emma_match(search_lower: &str, name_lower: &str) -> Option<EmmaMatch> {
     } else {
         None
     }
+}
+
+/// Administrative words that name a level, not a place. Dropped from both
+/// sides of an area-name compare so "Grad Zagreb" and "Zagreb region" meet.
+const AREA_AFFIXES: &[&str] = &[
+    "grad",
+    "stadt",
+    "kreis",
+    "landkreis",
+    "region",
+    "county",
+    "district",
+    "city",
+    "municipality",
+    "powiat",
+    "gmina",
+    "okres",
+    "kraj",
+    "oblast",
+];
+
+/// Lowercase, diacritics folded, split into tokens, administrative affixes
+/// dropped. "Grad Zagreb" and "Zagreb region" both become ["zagreb"].
+fn area_tokens(name: &str) -> Vec<String> {
+    use unicode_normalization::UnicodeNormalization;
+
+    let folded: String = name
+        .nfd()
+        .filter(|c| !unicode_normalization::char::is_combining_mark(*c))
+        .collect::<String>()
+        .to_lowercase();
+    folded
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty() && !AREA_AFFIXES.contains(t))
+        .map(str::to_string)
+        .collect()
+}
+
+/// How well one place name fits one area name, weakest first so `max` picks
+/// the strongest.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum AreaMatch {
+    /// Every significant token of the shorter name appears in the longer one.
+    Tokens,
+    /// Same tokens in the same order.
+    Exact,
+}
+
+/// Returns None when the two do not relate. No substring or prefix compare on
+/// tokens: "seine" does not fit "seinemaritime". The shorter side must carry
+/// at least one token of three or more characters, so a stray "i" or "de"
+/// cannot anchor a match on its own.
+fn rank_area_match(term_tokens: &[String], area_tokens: &[String]) -> Option<AreaMatch> {
+    if term_tokens.is_empty() || area_tokens.is_empty() {
+        return None;
+    }
+    if term_tokens == area_tokens {
+        return Some(AreaMatch::Exact);
+    }
+    let (shorter, longer) = if term_tokens.len() <= area_tokens.len() {
+        (term_tokens, area_tokens)
+    } else {
+        (area_tokens, term_tokens)
+    };
+    let anchored = shorter.iter().any(|t| t.chars().count() >= 3);
+    if anchored && shorter.iter().all(|t| longer.contains(t)) {
+        Some(AreaMatch::Tokens)
+    } else {
+        None
+    }
+}
+
+/// The one area name the user's place names pick out of the feed, or None.
+///
+/// Terms run most specific first. Within a term the best rank wins, and it
+/// counts only when every area at that rank is the same area, so a place name
+/// that fits several regions ("Seine" against three départements) is a miss
+/// for that term rather than a guess, and the next term is tried.
+fn match_area(search_terms: &[String], area_names: &[String]) -> Option<String> {
+    for term in search_terms {
+        let term_tokens = area_tokens(term);
+        let mut ranked: Vec<(AreaMatch, &str)> = area_names
+            .iter()
+            .filter_map(|area| {
+                rank_area_match(&term_tokens, &area_tokens(area)).map(|rank| (rank, area.as_str()))
+            })
+            .collect();
+        let Some(best) = ranked.iter().map(|(rank, _)| rank.clone()).max() else {
+            continue;
+        };
+        ranked.retain(|(rank, _)| *rank == best);
+        let mut distinct: Vec<&str> = ranked.iter().map(|(_, area)| *area).collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        match distinct.as_slice() {
+            [area] => {
+                tracing::debug!("Matched area {:?} by place name {:?}", area, term);
+                return Some(area.to_string());
+            }
+            many => tracing::debug!(
+                "Place name {:?} is ambiguous across {:?}; trying the next",
+                term,
+                many
+            ),
+        }
+    }
+    None
 }
 
 /// Fetches active weather alerts from MeteoAlarm for European locations.
@@ -462,30 +602,13 @@ async fn fetch_meteoalarm_alerts(latitude: f64, longitude: f64) -> Result<AlertR
     let xml_text = response.text().await?;
     let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml_text)?;
 
-    let report = meteoalarm_alerts_from_feed(feed, &user_emma_id);
-
-    match (&user_emma_id, report.region_filtered) {
-        (Some(emma_id), true) => tracing::debug!(
-            "Fetched {} alert(s) from MeteoAlarm ({}), filtered to {}",
-            report.alerts.len(),
-            country,
-            emma_id
-        ),
-        (Some(emma_id), false) => tracing::warn!(
-            "Fetched {} alert(s) from MeteoAlarm ({}), UNFILTERED - the feed carries no \
-            EMMA_ID geocodes, so the filter to {} could not apply",
-            report.alerts.len(),
-            country,
-            emma_id
-        ),
-        (None, _) => tracing::warn!(
-            "Fetched {} alert(s) from MeteoAlarm ({}), UNFILTERED - no EMMA_ID \
-            for this location, so these are national alerts, not local ones",
-            report.alerts.len(),
-            country
-        ),
-    }
-    Ok(report)
+    let search_terms = emma_search_terms(&address);
+    Ok(meteoalarm_alerts_from_feed(
+        feed,
+        &user_emma_id,
+        &search_terms,
+        country,
+    ))
 }
 
 /// The entry's EMMA_ID, if the feed tagged it with one. A geocode under any
@@ -500,35 +623,34 @@ fn entry_emma_id(entry: &MeteoAlarmEntry) -> Option<&str> {
 
 /// Lives in its own function so it can be unit-tested against fixtures without a live network.
 ///
-/// A resolved EMMA_ID can only filter a feed that tags its entries with
-/// EMMA_IDs. If none of the entries carries one, the filter cannot apply and
-/// the whole feed renders unfiltered, reported as such, rather than being
-/// emptied by a comparison that can never match.
-fn meteoalarm_alerts_from_feed(feed: MeteoAlarmFeed, user_emma_id: &Option<String>) -> AlertReport {
+/// Two stages. Stage 1: a resolved EMMA_ID filters a feed that tags its
+/// entries with EMMA_IDs; this is exact and, since the feed only lists regions
+/// that are alerting, it is the only stage that can tell a quiet day from a
+/// miss. Stage 2, when stage 1 has no usable filter: the user's place names
+/// are matched against the feed's own `areaDesc` values. A hit filters to that
+/// area; a miss keeps the national feed and says so.
+fn meteoalarm_alerts_from_feed(
+    feed: MeteoAlarmFeed,
+    user_emma_id: &Option<String>,
+    search_terms: &[String],
+    country: &str,
+) -> AlertReport {
+    if feed.entries.is_empty() {
+        tracing::debug!("Fetched 0 alert(s) from MeteoAlarm ({})", country);
+        return AlertReport {
+            alerts: vec![],
+            region_filtered: true,
+        };
+    }
+
     let feed_has_emma_ids = feed
         .entries
         .iter()
         .any(|entry| entry_emma_id(entry).is_some());
 
-    let filter = match user_emma_id {
-        Some(user_id) if !feed.entries.is_empty() && !feed_has_emma_ids => {
-            let mut schemes: Vec<&str> = feed
-                .entries
-                .iter()
-                .filter_map(|entry| entry.cap_geocode.as_ref())
-                .filter_map(|gc| gc.value_name.as_deref())
-                .collect();
-            schemes.sort_unstable();
-            schemes.dedup();
-            tracing::warn!(
-                "MeteoAlarm feed carries no EMMA_ID geocodes (found {:?}); the filter to {} \
-                cannot apply, rendering the feed unfiltered",
-                schemes,
-                user_id
-            );
-            None
-        }
-        Some(user_id) => {
+    // Stage 1: EMMA_ID against an EMMA_ID-tagged feed.
+    if let Some(user_id) = user_emma_id {
+        if feed_has_emma_ids {
             let untagged = feed
                 .entries
                 .iter()
@@ -541,20 +663,96 @@ fn meteoalarm_alerts_from_feed(feed: MeteoAlarmFeed, user_emma_id: &Option<Strin
                     user_id
                 );
             }
-            Some(user_id.clone())
+            let filter = Some(user_id.clone());
+            let alerts: Vec<AlertEntry> = feed
+                .entries
+                .into_iter()
+                .filter_map(|entry| parse_meteoalarm_entry(entry, &filter))
+                .collect();
+            tracing::debug!(
+                "Fetched {} alert(s) from MeteoAlarm ({}), filtered to {}",
+                alerts.len(),
+                country,
+                user_id
+            );
+            return AlertReport {
+                alerts,
+                region_filtered: true,
+            };
         }
-        None => None,
-    };
 
-    let alerts = feed
+        let mut schemes: Vec<&str> = feed
+            .entries
+            .iter()
+            .filter_map(|entry| entry.cap_geocode.as_ref())
+            .filter_map(|gc| gc.value_name.as_deref())
+            .collect();
+        schemes.sort_unstable();
+        schemes.dedup();
+        tracing::warn!(
+            "MeteoAlarm feed ({}) carries no EMMA_ID geocodes (found {:?}); the filter to {} \
+            cannot apply, matching by area name instead",
+            country,
+            schemes,
+            user_id
+        );
+    }
+
+    // Stage 2: place names against the feed's own area names.
+    let mut area_names: Vec<String> = feed
         .entries
-        .into_iter()
-        .filter_map(|entry| parse_meteoalarm_entry(entry, &filter))
+        .iter()
+        .filter_map(|entry| entry.cap_area_desc.clone())
+        .filter(|name| !name.is_empty())
         .collect();
+    area_names.sort_unstable();
+    area_names.dedup();
 
-    AlertReport {
-        alerts,
-        region_filtered: filter.is_some(),
+    match match_area(search_terms, &area_names) {
+        Some(area) => {
+            let alerts: Vec<AlertEntry> = feed
+                .entries
+                .into_iter()
+                .filter(|entry| entry.cap_area_desc.as_deref() == Some(area.as_str()))
+                .filter_map(|entry| parse_meteoalarm_entry(entry, &None))
+                .collect();
+            tracing::debug!(
+                "Fetched {} alert(s) from MeteoAlarm ({}), filtered to area {:?}",
+                alerts.len(),
+                country,
+                area
+            );
+            AlertReport {
+                alerts,
+                region_filtered: true,
+            }
+        }
+        None => {
+            let alerts: Vec<AlertEntry> = feed
+                .entries
+                .into_iter()
+                .filter_map(|entry| parse_meteoalarm_entry(entry, &None))
+                .collect();
+            let shown: Vec<&str> = area_names.iter().take(10).map(String::as_str).collect();
+            tracing::warn!(
+                "Fetched {} alert(s) from MeteoAlarm ({}), UNFILTERED - no area name matched {:?} \
+                among {} area(s) ({:?}{}); these are national alerts, not local ones",
+                alerts.len(),
+                country,
+                search_terms,
+                area_names.len(),
+                shown,
+                if area_names.len() > shown.len() {
+                    ", ..."
+                } else {
+                    ""
+                }
+            );
+            AlertReport {
+                alerts,
+                region_filtered: false,
+            }
+        }
     }
 }
 
@@ -1330,7 +1528,7 @@ mod tests {
             </entry>
         </feed>"#;
         let feed: MeteoAlarmFeed = quick_xml::de::from_str(xml).unwrap();
-        let alerts = meteoalarm_alerts_from_feed(feed, &None).alerts;
+        let alerts = meteoalarm_alerts_from_feed(feed, &None, &[], "test").alerts;
 
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].alert.id, "2-717000-DE723-future");
@@ -1520,6 +1718,8 @@ mod tests {
             country_code: Some("pl".to_string()),
             city: city.map(str::to_string),
             town: None,
+            village: None,
+            municipality: None,
             county: county.map(str::to_string),
             state: state.map(str::to_string),
         }
@@ -1604,6 +1804,8 @@ mod tests {
             country_code: Some("pl".to_string()),
             city: None,
             town: Some("Sopot".to_string()),
+            village: None,
+            municipality: None,
             county: None,
             state: None,
         };
@@ -1645,6 +1847,8 @@ mod tests {
             country_code: Some("at".to_string()),
             city: Some("Wien".to_string()),
             town: None,
+            village: None,
+            municipality: None,
             county: None,
             state: Some("Wien".to_string()),
         }
@@ -1685,6 +1889,8 @@ mod tests {
             country_code: Some("fr".to_string()),
             city: None,
             town: None,
+            village: None,
+            municipality: None,
             county: None,
             state: Some("Auvergne-Rhone-Alpes".to_string()),
         };
@@ -1795,14 +2001,15 @@ mod tests {
     #[test]
     fn meteoalarm_untagged_entry_dropped_when_filter_active() {
         let alerts =
-            meteoalarm_alerts_from_feed(untagged_feed(), &Some("PL1465".to_string())).alerts;
+            meteoalarm_alerts_from_feed(untagged_feed(), &Some("PL1465".to_string()), &[], "test")
+                .alerts;
 
         assert!(alerts.is_empty(), "untagged entry leaked past the filter");
     }
 
     #[test]
     fn meteoalarm_untagged_entry_kept_without_filter() {
-        let alerts = meteoalarm_alerts_from_feed(untagged_feed(), &None).alerts;
+        let alerts = meteoalarm_alerts_from_feed(untagged_feed(), &None, &[], "test").alerts;
 
         assert_eq!(alerts.len(), 2);
     }
@@ -1925,7 +2132,7 @@ mod tests {
             nuts3_entry("fr-2", "FR813", "Hérault")
         );
         let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
-        let report = meteoalarm_alerts_from_feed(feed, &Some("FR101".to_string()));
+        let report = meteoalarm_alerts_from_feed(feed, &Some("FR101".to_string()), &[], "test");
 
         // The filter cannot apply to a feed that never carries an EMMA_ID, so
         // nothing is dropped and the report says the list is national.
@@ -1953,7 +2160,7 @@ mod tests {
             nuts3_entry("fr-3", "FR713", "Drôme")
         );
         let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
-        let report = meteoalarm_alerts_from_feed(feed, &Some("FR101".to_string()));
+        let report = meteoalarm_alerts_from_feed(feed, &Some("FR101".to_string()), &[], "test");
 
         // One entry carries an EMMA_ID, so the feed is filterable: the NUTS3
         // entry is untagged for this purpose and is dropped.
@@ -1968,9 +2175,284 @@ mod tests {
     #[test]
     fn meteoalarm_empty_feed_with_filter_is_filtered() {
         let feed: MeteoAlarmFeed = quick_xml::de::from_str("<feed></feed>").unwrap();
-        let report = meteoalarm_alerts_from_feed(feed, &Some("PL1465".to_string()));
+        let report = meteoalarm_alerts_from_feed(feed, &Some("PL1465".to_string()), &[], "test");
 
         assert!(report.alerts.is_empty());
         assert!(report.region_filtered);
+    }
+
+    // -----------------------------------------------------------------
+    // Stage 2: area names
+    // -----------------------------------------------------------------
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Live Portuguese area names, 2026-09-02.
+    fn portugal_areas() -> Vec<String> {
+        strings(&[
+            "Beja",
+            "Bragança",
+            "Castelo Branco",
+            "Coimbra",
+            "Faro",
+            "Guarda",
+            "Leiria",
+            "Lisboa",
+            "Portalegre",
+            "Santarém",
+            "Setúbal",
+            "Vila Real",
+            "Viseu",
+            "Évora",
+        ])
+    }
+
+    /// Live Croatian area names, 2026-09-02.
+    fn croatia_areas() -> Vec<String> {
+        strings(&[
+            "Dubrovnik region",
+            "Kvarner i Kvarneric region",
+            "Middle Dalmatia region",
+            "North Dalmatia region",
+            "Osijek region",
+            "Rijeka region",
+            "South Dalmatia region",
+            "Split region",
+            "Velebit channel region",
+            "West Istrian coast region",
+            "Zagreb region",
+        ])
+    }
+
+    #[test]
+    fn area_tokens_folds_diacritics_and_affixes() {
+        assert_eq!(area_tokens("Évora"), strings(&["evora"]));
+        assert_eq!(area_tokens("Setúbal"), strings(&["setubal"]));
+        assert_eq!(area_tokens("Grad Zagreb"), strings(&["zagreb"]));
+        assert_eq!(area_tokens("Zagreb region"), strings(&["zagreb"]));
+        assert_eq!(
+            area_tokens("Brussel-Hoofdstad - Bruxelles-Capitale"),
+            strings(&["brussel", "hoofdstad", "bruxelles", "capitale"])
+        );
+        assert!(area_tokens("Kreis").is_empty());
+    }
+
+    #[test]
+    fn rank_area_match_exact_beats_tokens() {
+        let paris = area_tokens("Paris");
+        assert_eq!(
+            rank_area_match(&paris, &area_tokens("Paris")),
+            Some(AreaMatch::Exact)
+        );
+        assert_eq!(
+            rank_area_match(&paris, &area_tokens("Paris et Petite Ceinture")),
+            Some(AreaMatch::Tokens)
+        );
+        assert!(AreaMatch::Exact > AreaMatch::Tokens);
+    }
+
+    #[test]
+    fn rank_area_match_requires_an_anchor_token() {
+        // "i" appears in "Kvarner i Kvarneric region" but is too short to
+        // anchor a match on its own.
+        assert_eq!(
+            rank_area_match(
+                &area_tokens("i"),
+                &area_tokens("Kvarner i Kvarneric region")
+            ),
+            None
+        );
+        assert_eq!(rank_area_match(&[], &area_tokens("Faro")), None);
+    }
+
+    #[test]
+    fn rank_area_match_rejects_substrings() {
+        assert_eq!(
+            rank_area_match(&area_tokens("Seine"), &area_tokens("Seinemaritime")),
+            None
+        );
+    }
+
+    #[test]
+    fn match_area_zagreb() {
+        let terms = strings(&["Grad Zagreb", "Stadt Grad Zagreb"]);
+        assert_eq!(
+            match_area(&terms, &croatia_areas()).as_deref(),
+            Some("Zagreb region")
+        );
+    }
+
+    #[test]
+    fn match_area_lisboa_exact() {
+        let terms = strings(&[
+            "Lisboa",
+            "Stadt Lisboa",
+            "Arroios",
+            "Lisboa",
+            "Kreis Lisboa",
+        ]);
+        assert_eq!(
+            match_area(&terms, &portugal_areas()).as_deref(),
+            Some("Lisboa")
+        );
+    }
+
+    #[test]
+    fn match_area_paris_prefers_exact() {
+        let areas = strings(&["Paris", "Paris et Petite Ceinture"]);
+        assert_eq!(
+            match_area(&strings(&["Paris"]), &areas).as_deref(),
+            Some("Paris")
+        );
+    }
+
+    #[test]
+    fn match_area_ambiguous_term_is_a_miss() {
+        let areas = strings(&["Seine-Maritime", "Seine-et-Marne", "Hauts-de-Seine"]);
+        assert_eq!(match_area(&strings(&["Seine"]), &areas), None);
+    }
+
+    #[test]
+    fn match_area_greek_script_misses_english_block() {
+        // The legacy atom feed's areaDesc is the English transliteration;
+        // Nominatim returns Greek script. Same-script matching needs the JSON
+        // API's local-language block, which is a separate change.
+        let areas = strings(&["Attiki", "Kriti", "Thessalia"]);
+        assert_eq!(
+            match_area(&strings(&["Αθήνα", "Περιφέρεια Αττικής"]), &areas),
+            None
+        );
+    }
+
+    #[test]
+    fn match_area_no_terms_is_a_miss() {
+        assert_eq!(match_area(&[], &portugal_areas()), None);
+    }
+
+    fn emma_entry(id: &str, emma_id: &str, area: &str) -> String {
+        format!(
+            r#"<entry>
+                <id>https://feeds.meteoalarm.org/feed/{id}</id>
+                <cap:geocode>
+                    <valueName>EMMA_ID</valueName>
+                    <value>{emma_id}</value>
+                </cap:geocode>
+                <cap:areaDesc>{area}</cap:areaDesc>
+                <cap:event>Yellow High Temperature Warning</cap:event>
+                <cap:severity>Moderate</cap:severity>
+                <cap:sent>2026-06-01T08:00:00Z</cap:sent>
+                <cap:expires>2099-01-01T00:00:00Z</cap:expires>
+            </entry>"#
+        )
+    }
+
+    fn portugal_feed() -> MeteoAlarmFeed {
+        let xml = format!(
+            "<feed>{}{}{}</feed>",
+            emma_entry("pt-1", "PT021", "Faro"),
+            emma_entry("pt-2", "PT013", "Lisboa"),
+            emma_entry("pt-3", "PT015", "Setúbal")
+        );
+        quick_xml::de::from_str(&xml).unwrap()
+    }
+
+    #[test]
+    fn portugal_user_in_lisboa_is_filtered_by_area() {
+        // Stage 1 cannot resolve a Portuguese EMMA_ID (every codename is
+        // "Portugal"), so the feed's own area names decide.
+        let terms = strings(&[
+            "Lisboa",
+            "Stadt Lisboa",
+            "Arroios",
+            "Lisboa",
+            "Kreis Lisboa",
+        ]);
+        let report = meteoalarm_alerts_from_feed(portugal_feed(), &None, &terms, "Portugal");
+
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(report.alerts[0].area_desc, "Lisboa");
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn portugal_user_in_porto_renders_national() {
+        // Porto is not alerting, so nothing in the feed can be matched to it;
+        // the national feed renders and the report says so.
+        let report =
+            meteoalarm_alerts_from_feed(portugal_feed(), &None, &strings(&["Porto"]), "Portugal");
+
+        assert_eq!(report.alerts.len(), 3);
+        assert!(!report.region_filtered);
+    }
+
+    #[test]
+    fn france_nuts3_feed_filters_by_area() {
+        // An EMMA_ID resolved but the feed is NUTS3-tagged, so stage 1 cannot
+        // apply; the area name can.
+        let xml = format!(
+            "<feed>{}{}</feed>",
+            nuts3_entry("fr-1", "FR713", "Drôme"),
+            nuts3_entry("fr-2", "FR813", "Hérault")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let terms = strings(&["Valence", "Drôme"]);
+        let report =
+            meteoalarm_alerts_from_feed(feed, &Some("FR031".to_string()), &terms, "France");
+
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(report.alerts[0].area_desc, "Drôme");
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn emma_id_quiet_day_stays_filtered_without_stage_two() {
+        // Warsaw resolves PL1465 and nothing in the feed is for it: that is a
+        // quiet day, not a miss, and stage 2 must not turn it into the
+        // national feed.
+        let xml = format!(
+            "<feed>{}{}</feed>",
+            emma_entry("pl-1", "PL999", "Kraków"),
+            emma_entry("pl-2", "PL998", "Gdańsk")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("PL1465".to_string()),
+            &strings(&["Warszawa"]),
+            "Polska",
+        );
+
+        assert!(report.alerts.is_empty());
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn emma_search_terms_includes_village_and_municipality() {
+        let mut address = address(Some("Lisboa"), Some("Lisboa"), None);
+        address.village = Some("Arroios".to_string());
+        address.municipality = Some("Lisboa".to_string());
+        let terms = emma_search_terms(&address);
+
+        assert_eq!(
+            terms,
+            vec![
+                "Lisboa",
+                "Stadt Lisboa",
+                "Arroios",
+                "Lisboa",
+                "Lisboa",
+                "Kreis Lisboa",
+            ]
+        );
+    }
+
+    #[test]
+    fn cached_codenames_fills_then_reads() {
+        // One process-wide value; the network fetch is not exercised here.
+        cache_codenames(&codenames(&[("PT021", "Faro")]));
+        let hit = cached_codenames().expect("cached after a successful fetch");
+        assert_eq!(hit.codes.get("PT021").map(String::as_str), Some("Faro"));
     }
 }
