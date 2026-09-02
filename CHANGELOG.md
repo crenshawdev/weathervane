@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.13.0 — 2026-09-02
+
+### Changed
+- MeteoAlarm filtering runs in up to three stages. The EMMA_ID and area-name
+  stages are unchanged. A third stage runs only when the area-name stage missed
+  and one of the location's place names is in non-Latin script (Greek, Cyrillic
+  or Hebrew). It reads the country's MeteoAlarm JSON feed once for its
+  local-language area names, each paired with the English name the atom feed
+  uses, runs the same matching over the local names, and keeps the entries whose
+  area is the paired English name. Matching allows a little inflection, so
+  Nominatim's genitive `Αττικής` meets the feed's `Αττική`. Latin-script
+  locations never make that request. (#20)
+- `region_filtered` is `false` only when no region could be matched for the
+  location by any of the three stages. The wire shape is unchanged. (#20)
+
 ## 0.12.0 — 2026-09-02
 
 ### Changed
