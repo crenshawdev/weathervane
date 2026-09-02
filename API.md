@@ -141,12 +141,12 @@ otherwise know:
   `cap:areaDesc`, NWS `areaDesc` (a `;`-separated county list), the containing
   ECCC polygon's `areaDesc`. BOM sends none, so it is `""`.
 - `region_filtered` -- `false` only when a MeteoAlarm national feed was returned
-  unfiltered because no region could be matched for the location, by EMMA_ID or
-  by area name, so the entries are national, not local. NWS, ECCC and BOM filter
-  by point, polygon and geohash, and an empty result is trivially filtered, so
-  all of those are `true`.
+  unfiltered because no region could be matched for the location, by EMMA_ID,
+  by area name, or by local-language area name, so the entries are national,
+  not local. NWS, ECCC and BOM filter by point, polygon and geohash, and an
+  empty result is trivially filtered, so all of those are `true`.
 
-MeteoAlarm filtering runs in two stages. First the location's EMMA_ID, resolved
+MeteoAlarm filtering runs in up to three stages. First the location's EMMA_ID, resolved
 from the codename list, filters a feed whose entries are EMMA_ID-tagged; this is
 exact, and since the feed only lists regions that are alerting it is the only
 stage that can tell a quiet day from a miss. When that produces no usable filter
@@ -154,9 +154,15 @@ stage that can tell a quiet day from a miss. When that produces no usable filter
 all), the location's place names are matched against the feed's own `areaDesc`
 values: diacritics folded, administrative affixes such as "Grad" and "region"
 dropped, exact match preferred, and a place name that fits more than one region
-is treated as a miss rather than a guess. When an EMMA_ID did resolve against an
-EMMA_ID-tagged feed, entries carrying no geocode are dropped rather than shown,
-since they cannot be placed in any region.
+is treated as a miss rather than a guess. Third, only when that missed and a
+place name is in non-Latin script (Greek, Cyrillic, Hebrew), the country's
+MeteoAlarm JSON feed is read once for its local-language area names, each paired
+with the English name the atom feed uses; the same matching runs over the local
+names, with a small allowance for inflection (Nominatim's genitive "Αττικής"
+meets the feed's "Αττική"), and a hit keeps the entries whose area is the paired
+English name. Latin-script locations never make that request. When an EMMA_ID
+did resolve against an EMMA_ID-tagged feed, entries carrying no geocode are
+dropped rather than shown, since they cannot be placed in any region.
 
 ### `fetch_alerts`
 
