@@ -60,16 +60,52 @@ pub struct Alert {
     pub expires: DateTime<Utc>,
 }
 
-/// Fetches active weather alerts based on location.
+/// One alert with the provider's name for the area it covers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertEntry {
+    pub alert: Alert,
+    /// Provider's area name for this entry: MeteoAlarm `cap:areaDesc`, NWS
+    /// `areaDesc`, the containing ECCC polygon's `areaDesc`. Empty where the
+    /// provider sends none (BOM).
+    pub area_desc: String,
+}
+
+/// What `fetch_alerts_detailed` returns: the alerts, and whether they were
+/// narrowed to the caller's area.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertReport {
+    pub alerts: Vec<AlertEntry>,
+    /// `false` only when a MeteoAlarm national feed was returned unfiltered:
+    /// no EMMA_ID resolved for the location, or the feed carries no EMMA_ID
+    /// geocodes to filter on (France tags entries with NUTS3), so the entries
+    /// are national, not local. NWS, ECCC and BOM filter by point, polygon and
+    /// geohash respectively, and an empty result is trivially filtered, so all
+    /// of those are `true`.
+    pub region_filtered: bool,
+}
+
+/// Fetches active weather alerts based on location, with each entry's area
+/// name and whether the list was narrowed to the caller's area.
 /// Dispatches to the appropriate regional API.
-pub async fn fetch_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>> {
+pub async fn fetch_alerts_detailed(latitude: f64, longitude: f64) -> Result<AlertReport> {
     match detect_region(latitude, longitude) {
         Region::Us => fetch_nws_alerts(latitude, longitude).await,
         Region::Europe => fetch_meteoalarm_alerts(latitude, longitude).await,
         Region::Canada => fetch_eccc_alerts(latitude, longitude).await,
         Region::Australia => fetch_bom_alerts(latitude, longitude).await,
-        Region::Unknown => Ok(vec![]),
+        Region::Unknown => Ok(AlertReport {
+            alerts: vec![],
+            region_filtered: true,
+        }),
     }
+}
+
+/// Fetches active weather alerts based on location.
+/// Thin wrapper over `fetch_alerts_detailed` that drops the area names and
+/// the filtering flag.
+pub async fn fetch_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>> {
+    let report = fetch_alerts_detailed(latitude, longitude).await?;
+    Ok(report.alerts.into_iter().map(|entry| entry.alert).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -97,10 +133,12 @@ struct NwsAlertProperties {
     description: Option<String>,
     sent: String,
     expires: Option<String>,
+    #[serde(rename = "areaDesc")]
+    area_desc: Option<String>,
 }
 
 /// Fetches active weather alerts from the NWS API for US locations.
-async fn fetch_nws_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>> {
+async fn fetch_nws_alerts(latitude: f64, longitude: f64) -> Result<AlertReport> {
     let url = format!(
         "https://api.weather.gov/alerts/active?point={},{}",
         latitude, longitude
@@ -114,7 +152,10 @@ async fn fetch_nws_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>> {
 
     if !response.status().is_success() {
         tracing::warn!("NWS API returned status: {}", response.status());
-        return Ok(vec![]);
+        return Ok(AlertReport {
+            alerts: vec![],
+            region_filtered: true,
+        });
     }
 
     let data: NwsAlertsResponse = response.json().await?;
@@ -122,11 +163,15 @@ async fn fetch_nws_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>> {
     let alerts = nws_alerts_from_response(data);
 
     tracing::debug!("Fetched {} alert(s) from NWS", alerts.len());
-    Ok(alerts)
+    // The point query already narrowed the list to the caller's location.
+    Ok(AlertReport {
+        alerts,
+        region_filtered: true,
+    })
 }
 
 /// Lives in its own function so it can be unit-tested against fixtures without a live network.
-fn nws_alerts_from_response(data: NwsAlertsResponse) -> Vec<Alert> {
+fn nws_alerts_from_response(data: NwsAlertsResponse) -> Vec<AlertEntry> {
     data.features
         .into_iter()
         .filter_map(|feature| {
@@ -147,17 +192,20 @@ fn nws_alerts_from_response(data: NwsAlertsResponse) -> Vec<Alert> {
                 return None;
             }
 
-            Some(Alert {
-                id: props.id,
-                event: props.event,
-                severity: props
-                    .severity
-                    .as_deref()
-                    .map(AlertSeverity::from_cap_string)
-                    .unwrap_or(AlertSeverity::Unknown),
-                headline: props.headline.unwrap_or_default(),
-                description: props.description.unwrap_or_default(),
-                expires,
+            Some(AlertEntry {
+                alert: Alert {
+                    id: props.id,
+                    event: props.event,
+                    severity: props
+                        .severity
+                        .as_deref()
+                        .map(AlertSeverity::from_cap_string)
+                        .unwrap_or(AlertSeverity::Unknown),
+                    headline: props.headline.unwrap_or_default(),
+                    description: props.description.unwrap_or_default(),
+                    expires,
+                },
+                area_desc: props.area_desc.unwrap_or_default(),
             })
         })
         .collect()
@@ -191,11 +239,17 @@ struct MeteoAlarmEntry {
     cap_expires: Option<String>,
     #[serde(rename = "geocode")]
     cap_geocode: Option<MeteoAlarmGeocode>,
+    #[serde(rename = "areaDesc")]
+    cap_area_desc: Option<String>,
 }
 
 /// Geocode element containing EMMA_ID area identifier.
 #[derive(Debug, Deserialize)]
 struct MeteoAlarmGeocode {
+    /// Which scheme `value` belongs to. Most feeds say `EMMA_ID`; France says
+    /// `NUTS3`, whose codes are not EMMA_IDs and must not be filtered as such.
+    #[serde(rename = "valueName")]
+    value_name: Option<String>,
     value: Option<String>,
 }
 
@@ -349,7 +403,7 @@ fn rank_emma_match(search_lower: &str, name_lower: &str) -> Option<EmmaMatch> {
 }
 
 /// Fetches active weather alerts from MeteoAlarm for European locations.
-async fn fetch_meteoalarm_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>> {
+async fn fetch_meteoalarm_alerts(latitude: f64, longitude: f64) -> Result<AlertReport> {
     // Failing to determine the country is an error, not an absence of alerts.
     // Returning Ok(vec![]) here would be indistinguishable from a quiet day,
     // which is the silent-failure pattern this whole path is being fixed for.
@@ -382,7 +436,10 @@ async fn fetch_meteoalarm_alerts(latitude: f64, longitude: f64) -> Result<Vec<Al
         Some(info) => info,
         None => {
             tracing::debug!("{} ({}) is not covered by MeteoAlarm", country, iso_code);
-            return Ok(vec![]);
+            return Ok(AlertReport {
+                alerts: vec![],
+                region_filtered: true,
+            });
         }
     };
 
@@ -396,50 +453,126 @@ async fn fetch_meteoalarm_alerts(latitude: f64, longitude: f64) -> Result<Vec<Al
     let response = http_client()?.get(&url).send().await?;
     if !response.status().is_success() {
         tracing::warn!("MeteoAlarm returned status: {}", response.status());
-        return Ok(vec![]);
+        return Ok(AlertReport {
+            alerts: vec![],
+            region_filtered: user_emma_id.is_some(),
+        });
     }
 
     let xml_text = response.text().await?;
     let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml_text)?;
 
-    let alerts = meteoalarm_alerts_from_feed(feed, &user_emma_id);
+    let report = meteoalarm_alerts_from_feed(feed, &user_emma_id);
 
-    match &user_emma_id {
-        Some(emma_id) => tracing::debug!(
+    match (&user_emma_id, report.region_filtered) {
+        (Some(emma_id), true) => tracing::debug!(
             "Fetched {} alert(s) from MeteoAlarm ({}), filtered to {}",
-            alerts.len(),
+            report.alerts.len(),
             country,
             emma_id
         ),
-        None => tracing::warn!(
+        (Some(emma_id), false) => tracing::warn!(
+            "Fetched {} alert(s) from MeteoAlarm ({}), UNFILTERED - the feed carries no \
+            EMMA_ID geocodes, so the filter to {} could not apply",
+            report.alerts.len(),
+            country,
+            emma_id
+        ),
+        (None, _) => tracing::warn!(
             "Fetched {} alert(s) from MeteoAlarm ({}), UNFILTERED - no EMMA_ID \
             for this location, so these are national alerts, not local ones",
-            alerts.len(),
+            report.alerts.len(),
             country
         ),
     }
-    Ok(alerts)
+    Ok(report)
+}
+
+/// The entry's EMMA_ID, if the feed tagged it with one. A geocode under any
+/// other scheme (`NUTS3` in France) is not an EMMA_ID and yields `None`.
+fn entry_emma_id(entry: &MeteoAlarmEntry) -> Option<&str> {
+    entry
+        .cap_geocode
+        .as_ref()
+        .filter(|gc| gc.value_name.as_deref() == Some("EMMA_ID"))
+        .and_then(|gc| gc.value.as_deref())
 }
 
 /// Lives in its own function so it can be unit-tested against fixtures without a live network.
-fn meteoalarm_alerts_from_feed(feed: MeteoAlarmFeed, user_emma_id: &Option<String>) -> Vec<Alert> {
-    feed.entries
+///
+/// A resolved EMMA_ID can only filter a feed that tags its entries with
+/// EMMA_IDs. If none of the entries carries one, the filter cannot apply and
+/// the whole feed renders unfiltered, reported as such, rather than being
+/// emptied by a comparison that can never match.
+fn meteoalarm_alerts_from_feed(feed: MeteoAlarmFeed, user_emma_id: &Option<String>) -> AlertReport {
+    let feed_has_emma_ids = feed
+        .entries
+        .iter()
+        .any(|entry| entry_emma_id(entry).is_some());
+
+    let filter = match user_emma_id {
+        Some(user_id) if !feed.entries.is_empty() && !feed_has_emma_ids => {
+            let mut schemes: Vec<&str> = feed
+                .entries
+                .iter()
+                .filter_map(|entry| entry.cap_geocode.as_ref())
+                .filter_map(|gc| gc.value_name.as_deref())
+                .collect();
+            schemes.sort_unstable();
+            schemes.dedup();
+            tracing::warn!(
+                "MeteoAlarm feed carries no EMMA_ID geocodes (found {:?}); the filter to {} \
+                cannot apply, rendering the feed unfiltered",
+                schemes,
+                user_id
+            );
+            None
+        }
+        Some(user_id) => {
+            let untagged = feed
+                .entries
+                .iter()
+                .filter(|entry| entry_emma_id(entry).is_none())
+                .count();
+            if untagged > 0 {
+                tracing::debug!(
+                    "Dropped {} untagged MeteoAlarm entr(y/ies) while filtering to {}",
+                    untagged,
+                    user_id
+                );
+            }
+            Some(user_id.clone())
+        }
+        None => None,
+    };
+
+    let alerts = feed
+        .entries
         .into_iter()
-        .filter_map(|entry| parse_meteoalarm_entry(entry, user_emma_id))
-        .collect()
+        .filter_map(|entry| parse_meteoalarm_entry(entry, &filter))
+        .collect();
+
+    AlertReport {
+        alerts,
+        region_filtered: filter.is_some(),
+    }
 }
 
-/// Parses a MeteoAlarm entry into an Alert.
+/// Parses a MeteoAlarm entry into an AlertEntry.
 /// Returns None if it doesn't match the user's EMMA_ID or is expired.
-fn parse_meteoalarm_entry(entry: MeteoAlarmEntry, user_emma_id: &Option<String>) -> Option<Alert> {
+fn parse_meteoalarm_entry(
+    entry: MeteoAlarmEntry,
+    user_emma_id: &Option<String>,
+) -> Option<AlertEntry> {
     let now = Utc::now();
 
     // Filter by EMMA_ID if we resolved one for the user
     if let Some(user_id) = user_emma_id {
-        let entry_emma_id = entry.cap_geocode.as_ref().and_then(|gc| gc.value.as_ref());
-
-        match entry_emma_id {
+        match entry_emma_id(&entry) {
             Some(entry_id) if entry_id != user_id => return None,
+            // An untagged entry cannot be shown to belong to the user's region;
+            // when a filter is active it is dropped, not leaked past it.
+            None => return None,
             _ => {}
         }
     }
@@ -474,13 +607,16 @@ fn parse_meteoalarm_entry(entry: MeteoAlarmEntry, user_emma_id: &Option<String>)
         .map(AlertSeverity::from_cap_string)
         .unwrap_or(AlertSeverity::Unknown);
 
-    Some(Alert {
-        id: entry.cap_identifier.unwrap_or(entry.id),
-        event,
-        severity,
-        headline,
-        description: String::new(),
-        expires,
+    Some(AlertEntry {
+        alert: Alert {
+            id: entry.cap_identifier.unwrap_or(entry.id),
+            event,
+            severity,
+            headline,
+            description: String::new(),
+            expires,
+        },
+        area_desc: entry.cap_area_desc.unwrap_or_default(),
     })
 }
 
@@ -522,12 +658,12 @@ struct EcccCapArea {
 }
 
 /// Fetches active weather alerts from ECCC (Environment and Climate Change Canada).
-async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>> {
+async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<AlertReport> {
     let offices = get_eccc_office_codes(latitude, longitude);
     let today = chrono::Utc::now().format("%Y%m%d").to_string();
     let client = http_client()?;
 
-    let mut all_alerts: Vec<Alert> = Vec::new();
+    let mut all_alerts: Vec<AlertEntry> = Vec::new();
     let mut seen_ids: HashSet<String> = HashSet::new();
 
     for office in offices {
@@ -614,12 +750,21 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>> 
     }
 
     tracing::debug!("Fetched {} alert(s) from ECCC", all_alerts.len());
-    Ok(all_alerts)
+    // Every entry passed the polygon check for the caller's point.
+    Ok(AlertReport {
+        alerts: all_alerts,
+        region_filtered: true,
+    })
 }
 
 /// Parses an ECCC CAP XML document into an Alert.
 /// Filters by location using polygon containment and deduplicates by identifier.
-fn parse_eccc_cap(xml: &str, lat: f64, lon: f64, seen_ids: &mut HashSet<String>) -> Option<Alert> {
+fn parse_eccc_cap(
+    xml: &str,
+    lat: f64,
+    lon: f64,
+    seen_ids: &mut HashSet<String>,
+) -> Option<AlertEntry> {
     let cap: EcccCapAlert = quick_xml::de::from_str(xml).ok()?;
 
     if cap.status != "Actual" {
@@ -686,17 +831,20 @@ fn parse_eccc_cap(xml: &str, lat: f64, lon: f64, seen_ids: &mut HashSet<String>)
 
     let headline = info.headline.clone().unwrap_or_else(|| event.clone());
 
-    Some(Alert {
-        id: cap.identifier,
-        event,
-        severity: info
-            .severity
-            .as_deref()
-            .map(AlertSeverity::from_cap_string)
-            .unwrap_or(AlertSeverity::Unknown),
-        headline,
-        description: info.description.clone().unwrap_or_default(),
-        expires,
+    Some(AlertEntry {
+        alert: Alert {
+            id: cap.identifier,
+            event,
+            severity: info
+                .severity
+                .as_deref()
+                .map(AlertSeverity::from_cap_string)
+                .unwrap_or(AlertSeverity::Unknown),
+            headline,
+            description: info.description.clone().unwrap_or_default(),
+            expires,
+        },
+        area_desc,
     })
 }
 
@@ -723,7 +871,7 @@ struct BomWarning {
 }
 
 /// Fetches weather alerts from the Australian Bureau of Meteorology.
-async fn fetch_bom_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>> {
+async fn fetch_bom_alerts(latitude: f64, longitude: f64) -> Result<AlertReport> {
     let geohash = encode_geohash(latitude, longitude, 6);
     let url = format!(
         "https://api.weather.bom.gov.au/v1/locations/{}/warnings",
@@ -733,18 +881,25 @@ async fn fetch_bom_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>> {
     let response = http_client()?.get(&url).send().await?;
 
     if !response.status().is_success() {
-        return Ok(vec![]);
+        return Ok(AlertReport {
+            alerts: vec![],
+            region_filtered: true,
+        });
     }
 
     let response_body: BomWarningsResponse = response.json().await?;
 
     let alerts = bom_alerts_from_response(response_body.data);
 
-    Ok(alerts)
+    // The geohash lookup already narrowed the list to the caller's location.
+    Ok(AlertReport {
+        alerts,
+        region_filtered: true,
+    })
 }
 
 /// Lives in its own function so it can be unit-tested against fixtures without a live network.
-fn bom_alerts_from_response(data: Vec<BomWarning>) -> Vec<Alert> {
+fn bom_alerts_from_response(data: Vec<BomWarning>) -> Vec<AlertEntry> {
     let now = Utc::now();
 
     data.into_iter()
@@ -779,13 +934,17 @@ fn bom_alerts_from_response(data: Vec<BomWarning>) -> Vec<Alert> {
                 .map(|t| t.replace('_', " "))
                 .unwrap_or_else(|| headline.clone());
 
-            Some(Alert {
-                id: w.id.clone(),
-                event,
-                severity,
-                headline,
-                description: String::new(),
-                expires,
+            Some(AlertEntry {
+                alert: Alert {
+                    id: w.id.clone(),
+                    event,
+                    severity,
+                    headline,
+                    description: String::new(),
+                    expires,
+                },
+                // BOM's warnings endpoint carries no area name.
+                area_desc: String::new(),
             })
         })
         .collect()
@@ -814,7 +973,7 @@ mod tests {
         let alerts = nws_alerts_from_response(data);
 
         assert_eq!(alerts.len(), 1);
-        let alert = &alerts[0];
+        let alert = &alerts[0].alert;
         assert_eq!(alert.id, "NWS-IDP-PROD-123");
         assert_eq!(alert.event, "Tornado Warning");
         assert_eq!(alert.severity, AlertSeverity::Severe);
@@ -853,7 +1012,7 @@ mod tests {
         let alerts = nws_alerts_from_response(data);
 
         assert_eq!(alerts.len(), 1);
-        assert_eq!(alerts[0].severity, AlertSeverity::Unknown);
+        assert_eq!(alerts[0].alert.severity, AlertSeverity::Unknown);
     }
 
     #[test]
@@ -888,8 +1047,8 @@ mod tests {
         let alerts = nws_alerts_from_response(data);
 
         assert_eq!(alerts.len(), 1);
-        assert_eq!(alerts[0].headline, "");
-        assert_eq!(alerts[0].description, "");
+        assert_eq!(alerts[0].alert.headline, "");
+        assert_eq!(alerts[0].alert.description, "");
     }
 
     // -----------------------------------------------------------------
@@ -942,7 +1101,7 @@ mod tests {
         let alerts = bom_alerts_from_response(resp.data);
 
         assert_eq!(alerts.len(), 1);
-        let alert = &alerts[0];
+        let alert = &alerts[0].alert;
         assert_eq!(alert.severity, AlertSeverity::Severe);
         assert_eq!(alert.event, "severe thunderstorm");
         assert_eq!(alert.headline, "Severe Thunderstorm Warning");
@@ -962,7 +1121,7 @@ mod tests {
         let alerts = bom_alerts_from_response(resp.data);
 
         assert_eq!(alerts.len(), 1);
-        assert_eq!(alerts[0].severity, AlertSeverity::Severe);
+        assert_eq!(alerts[0].alert.severity, AlertSeverity::Severe);
     }
 
     #[test]
@@ -1011,8 +1170,8 @@ mod tests {
         let alerts = bom_alerts_from_response(resp.data);
 
         assert_eq!(alerts.len(), 1);
-        assert_eq!(alerts[0].headline, "Weather Warning");
-        assert_eq!(alerts[0].event, "flood");
+        assert_eq!(alerts[0].alert.headline, "Weather Warning");
+        assert_eq!(alerts[0].alert.event, "flood");
     }
 
     #[test]
@@ -1029,8 +1188,8 @@ mod tests {
         let alerts = bom_alerts_from_response(resp.data);
 
         assert_eq!(alerts.len(), 1);
-        assert_eq!(alerts[0].event, "Severe Weather Alert");
-        assert_eq!(alerts[0].headline, "Severe Weather Alert");
+        assert_eq!(alerts[0].alert.event, "Severe Weather Alert");
+        assert_eq!(alerts[0].alert.headline, "Severe Weather Alert");
     }
 
     // -----------------------------------------------------------------
@@ -1053,16 +1212,20 @@ mod tests {
             <id>https://feeds.meteoalarm.org/feed/example-entry-1</id>
             <title>Wind Warning for Test Region</title>
             <cap:identifier>2-717000-DE723</cap:identifier>
+            <cap:areaDesc>Test Region</cap:areaDesc>
             <cap:event>Wind</cap:event>
             <cap:severity>Severe</cap:severity>
             <cap:sent>2026-06-01T08:00:00Z</cap:sent>
             <cap:expires>2099-01-01T00:00:00Z</cap:expires>
             <cap:geocode>
+                <valueName>EMMA_ID</valueName>
                 <cap:value>DE723</cap:value>
             </cap:geocode>
         </entry>"#;
         let entry: MeteoAlarmEntry = quick_xml::de::from_str(xml).unwrap();
-        let alert = parse_meteoalarm_entry(entry, &None).expect("entry should decode to an alert");
+        let entry = parse_meteoalarm_entry(entry, &None).expect("entry should decode to an alert");
+        assert_eq!(entry.area_desc, "Test Region");
+        let alert = entry.alert;
 
         assert_eq!(alert.id, "2-717000-DE723");
         assert_eq!(alert.event, "Wind");
@@ -1081,6 +1244,7 @@ mod tests {
             <cap:sent>2026-06-01T08:00:00Z</cap:sent>
             <cap:expires>2099-01-01T00:00:00Z</cap:expires>
             <cap:geocode>
+                <valueName>EMMA_ID</valueName>
                 <cap:value>DE723</cap:value>
             </cap:geocode>
         </entry>"#;
@@ -1088,7 +1252,7 @@ mod tests {
         let alert = parse_meteoalarm_entry(entry, &Some("DE723".to_string()));
 
         assert!(alert.is_some());
-        let alert = alert.unwrap();
+        let alert = alert.unwrap().alert;
         assert_eq!(alert.event, "Wind");
         assert_eq!(alert.severity, AlertSeverity::Severe);
     }
@@ -1104,6 +1268,7 @@ mod tests {
             <cap:sent>2026-06-01T08:00:00Z</cap:sent>
             <cap:expires>2099-01-01T00:00:00Z</cap:expires>
             <cap:geocode>
+                <valueName>EMMA_ID</valueName>
                 <cap:value>DE723</cap:value>
             </cap:geocode>
         </entry>"#;
@@ -1124,6 +1289,7 @@ mod tests {
             <cap:sent>2020-01-01T00:00:00Z</cap:sent>
             <cap:expires>2020-01-01T00:00:00Z</cap:expires>
             <cap:geocode>
+                <valueName>EMMA_ID</valueName>
                 <cap:value>DE723</cap:value>
             </cap:geocode>
         </entry>"#;
@@ -1145,6 +1311,7 @@ mod tests {
                 <cap:sent>2026-06-01T08:00:00Z</cap:sent>
                 <cap:expires>2099-01-01T00:00:00Z</cap:expires>
                 <cap:geocode>
+                    <valueName>EMMA_ID</valueName>
                     <cap:value>DE723</cap:value>
                 </cap:geocode>
             </entry>
@@ -1157,15 +1324,16 @@ mod tests {
                 <cap:sent>2020-01-01T00:00:00Z</cap:sent>
                 <cap:expires>2020-01-01T00:00:00Z</cap:expires>
                 <cap:geocode>
+                    <valueName>EMMA_ID</valueName>
                     <cap:value>DE723</cap:value>
                 </cap:geocode>
             </entry>
         </feed>"#;
         let feed: MeteoAlarmFeed = quick_xml::de::from_str(xml).unwrap();
-        let alerts = meteoalarm_alerts_from_feed(feed, &None);
+        let alerts = meteoalarm_alerts_from_feed(feed, &None).alerts;
 
         assert_eq!(alerts.len(), 1);
-        assert_eq!(alerts[0].id, "2-717000-DE723-future");
+        assert_eq!(alerts[0].alert.id, "2-717000-DE723-future");
     }
 
     // -----------------------------------------------------------------
@@ -1210,7 +1378,7 @@ mod tests {
         let alert = parse_eccc_cap(&xml, 5.0, 5.0, &mut seen_ids);
 
         assert!(alert.is_some());
-        let alert = alert.unwrap();
+        let alert = alert.unwrap().alert;
         assert_eq!(alert.event, "Thunderstorm Warning");
         assert_eq!(alert.severity, AlertSeverity::Severe);
         assert_eq!(alert.id, "CA-ON-2026-001");
@@ -1574,5 +1742,235 @@ mod tests {
             match_emma_id(&address(None, Some("Warsaw County"), None), "PL", &codes),
             Some("PL1465".to_string())
         );
+    }
+
+    // -----------------------------------------------------------------
+    // area_desc and AlertReport
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn meteoalarm_entry_without_area_desc_is_empty_string() {
+        let xml = r#"<entry>
+            <id>https://feeds.meteoalarm.org/feed/example-entry-5</id>
+            <title>Wind Warning</title>
+            <cap:event>Wind</cap:event>
+            <cap:sent>2026-06-01T08:00:00Z</cap:sent>
+            <cap:expires>2099-01-01T00:00:00Z</cap:expires>
+        </entry>"#;
+        let entry: MeteoAlarmEntry = quick_xml::de::from_str(xml).unwrap();
+        let entry = parse_meteoalarm_entry(entry, &None).unwrap();
+
+        assert_eq!(entry.area_desc, "");
+    }
+
+    /// Two entries: one tagged with a region that is not the user's, one with
+    /// no geocode at all. With a filter active both must be dropped; before
+    /// the `None` arm existed, the untagged one leaked through.
+    fn untagged_feed() -> MeteoAlarmFeed {
+        let xml = r#"<feed>
+            <entry>
+                <id>https://feeds.meteoalarm.org/feed/tagged-elsewhere</id>
+                <title>Wind Warning for elsewhere</title>
+                <cap:event>Wind</cap:event>
+                <cap:severity>Moderate</cap:severity>
+                <cap:sent>2026-06-01T08:00:00Z</cap:sent>
+                <cap:expires>2099-01-01T00:00:00Z</cap:expires>
+                <cap:geocode>
+                    <valueName>EMMA_ID</valueName>
+                    <cap:value>PL999</cap:value>
+                </cap:geocode>
+            </entry>
+            <entry>
+                <id>https://feeds.meteoalarm.org/feed/untagged</id>
+                <title>Wind Warning with no geocode</title>
+                <cap:event>Wind</cap:event>
+                <cap:severity>Moderate</cap:severity>
+                <cap:sent>2026-06-01T08:00:00Z</cap:sent>
+                <cap:expires>2099-01-01T00:00:00Z</cap:expires>
+            </entry>
+        </feed>"#;
+        quick_xml::de::from_str(xml).unwrap()
+    }
+
+    #[test]
+    fn meteoalarm_untagged_entry_dropped_when_filter_active() {
+        let alerts =
+            meteoalarm_alerts_from_feed(untagged_feed(), &Some("PL1465".to_string())).alerts;
+
+        assert!(alerts.is_empty(), "untagged entry leaked past the filter");
+    }
+
+    #[test]
+    fn meteoalarm_untagged_entry_kept_without_filter() {
+        let alerts = meteoalarm_alerts_from_feed(untagged_feed(), &None).alerts;
+
+        assert_eq!(alerts.len(), 2);
+    }
+
+    #[test]
+    fn nws_decodes_area_desc() {
+        let json = r#"{"features":[{"properties":{
+            "id":"NWS-IDP-PROD-128",
+            "event":"Heat Advisory",
+            "severity":"Moderate",
+            "headline":"Heat Advisory until 8 PM",
+            "description":"Hot.",
+            "sent":"2026-06-01T12:00:00Z",
+            "expires":"2099-01-01T00:00:00Z",
+            "areaDesc":"Coastal Los Angeles County; Los Angeles County Beaches"
+        }}]}"#;
+        let data: NwsAlertsResponse = serde_json::from_str(json).unwrap();
+        let alerts = nws_alerts_from_response(data);
+
+        assert_eq!(
+            alerts[0].area_desc,
+            "Coastal Los Angeles County; Los Angeles County Beaches"
+        );
+    }
+
+    #[test]
+    fn nws_missing_area_desc_is_empty_string() {
+        let json = r#"{"features":[{"properties":{
+            "id":"NWS-IDP-PROD-129",
+            "event":"Heat Advisory",
+            "severity":"Moderate",
+            "headline":"Heat Advisory",
+            "description":"Hot.",
+            "sent":"2026-06-01T12:00:00Z",
+            "expires":"2099-01-01T00:00:00Z"
+        }}]}"#;
+        let data: NwsAlertsResponse = serde_json::from_str(json).unwrap();
+        let alerts = nws_alerts_from_response(data);
+
+        assert_eq!(alerts[0].area_desc, "");
+    }
+
+    #[test]
+    fn eccc_area_desc_is_the_containing_polygon() {
+        let xml = eccc_fixture(
+            "Actual",
+            "Alert",
+            "2026-06-01T08:00:00-04:00",
+            "CA-ON-2026-008",
+        );
+        let mut seen_ids = HashSet::new();
+        let entry = parse_eccc_cap(&xml, 5.0, 5.0, &mut seen_ids).unwrap();
+
+        assert_eq!(entry.area_desc, "Test Region");
+    }
+
+    #[test]
+    fn bom_area_desc_is_empty_string() {
+        let json = r#"{"data":[{
+            "id":"bom-4",
+            "type":"flood",
+            "short_title":"Flood Warning",
+            "warning_group_type":"moderate",
+            "phase":"active",
+            "expiry_time":"2099-01-01T00:00:00Z"
+        }]}"#;
+        let resp: BomWarningsResponse = serde_json::from_str(json).unwrap();
+        let alerts = bom_alerts_from_response(resp.data);
+
+        assert_eq!(alerts[0].area_desc, "");
+    }
+
+    #[tokio::test]
+    async fn dispatch_unknown_region_detailed_is_empty_and_filtered() {
+        // Same Tokyo coordinate as dispatch_unknown_region_returns_empty.
+        let report = fetch_alerts_detailed(35.68, 139.65).await.unwrap();
+
+        assert!(report.alerts.is_empty());
+        assert!(report.region_filtered);
+    }
+
+    // -----------------------------------------------------------------
+    // Feeds that are not EMMA_ID-tagged (France uses NUTS3)
+    // -----------------------------------------------------------------
+
+    /// The shape of every entry in the live French feed on 2026-09-02: a NUTS3
+    /// geocode, with the EMMA_ID only in a link href that is not parsed.
+    fn nuts3_entry(id: &str, nuts3: &str, area: &str) -> String {
+        format!(
+            r#"<entry>
+                <id>https://feeds.meteoalarm.org/feed/{id}</id>
+                <cap:geocode>
+                    <valueName>NUTS3</valueName>
+                    <value>{nuts3}</value>
+                </cap:geocode>
+                <link title="{area}" href="https://meteoalarm.org?geocode=EMMA_ID:FR031" hreflang="en"/>
+                <cap:areaDesc>{area}</cap:areaDesc>
+                <cap:event>Yellow Wind Warning</cap:event>
+                <cap:severity>Moderate</cap:severity>
+                <cap:sent>2026-06-01T08:00:00Z</cap:sent>
+                <cap:expires>2099-01-01T00:00:00Z</cap:expires>
+            </entry>"#
+        )
+    }
+
+    #[test]
+    fn meteoalarm_nuts3_geocode_is_not_an_emma_id() {
+        let entry: MeteoAlarmEntry =
+            quick_xml::de::from_str(&nuts3_entry("fr-1", "FR713", "Drôme")).unwrap();
+
+        assert_eq!(entry_emma_id(&entry), None);
+        assert_eq!(entry.cap_geocode.unwrap().value.as_deref(), Some("FR713"));
+    }
+
+    #[test]
+    fn meteoalarm_feed_without_emma_ids_renders_unfiltered() {
+        let xml = format!(
+            "<feed>{}{}</feed>",
+            nuts3_entry("fr-1", "FR713", "Drôme"),
+            nuts3_entry("fr-2", "FR813", "Hérault")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(feed, &Some("FR101".to_string()));
+
+        // The filter cannot apply to a feed that never carries an EMMA_ID, so
+        // nothing is dropped and the report says the list is national.
+        assert_eq!(report.alerts.len(), 2);
+        assert!(!report.region_filtered);
+        assert_eq!(report.alerts[0].area_desc, "Drôme");
+    }
+
+    #[test]
+    fn meteoalarm_mixed_feed_drops_untagged_and_stays_filtered() {
+        let xml = format!(
+            r#"<feed>
+                <entry>
+                    <id>https://feeds.meteoalarm.org/feed/tagged-here</id>
+                    <cap:event>Wind</cap:event>
+                    <cap:sent>2026-06-01T08:00:00Z</cap:sent>
+                    <cap:expires>2099-01-01T00:00:00Z</cap:expires>
+                    <cap:geocode>
+                        <valueName>EMMA_ID</valueName>
+                        <value>FR101</value>
+                    </cap:geocode>
+                </entry>
+                {}
+            </feed>"#,
+            nuts3_entry("fr-3", "FR713", "Drôme")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(feed, &Some("FR101".to_string()));
+
+        // One entry carries an EMMA_ID, so the feed is filterable: the NUTS3
+        // entry is untagged for this purpose and is dropped.
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(
+            report.alerts[0].alert.id,
+            "https://feeds.meteoalarm.org/feed/tagged-here"
+        );
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn meteoalarm_empty_feed_with_filter_is_filtered() {
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str("<feed></feed>").unwrap();
+        let report = meteoalarm_alerts_from_feed(feed, &Some("PL1465".to_string()));
+
+        assert!(report.alerts.is_empty());
+        assert!(report.region_filtered);
     }
 }

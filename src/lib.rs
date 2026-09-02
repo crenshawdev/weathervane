@@ -30,7 +30,7 @@ pub mod wire;
 pub use air_quality::{
     AirQualityData, AqiCategory, AqiSource, AqiStandard, EuAqiCategory, UsAqiCategory,
 };
-pub use alerts::{Alert, AlertSeverity};
+pub use alerts::{Alert, AlertEntry, AlertReport, AlertSeverity};
 pub use codes::{CompassDirection, WeatherCondition};
 pub use error::{Error, NetworkKind, ParseKind, Result};
 pub use geo::{detect_region, Region};
@@ -45,7 +45,7 @@ pub use wire::{Envelope, EnvelopeError, WireError};
 
 // Re-export the async functions at crate root.
 pub use air_quality::fetch_air_quality;
-pub use alerts::fetch_alerts;
+pub use alerts::{fetch_alerts, fetch_alerts_detailed};
 pub use client::reset_http_client;
 pub use location::{detect_location, search_city, uses_imperial_units};
 pub use network::network_stream;

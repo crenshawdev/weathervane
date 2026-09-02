@@ -118,13 +118,45 @@ JSON shapes for all public types are frozen in [CONTRACT.md](CONTRACT.md).
 
 ## Weather Alerts
 
+### `fetch_alerts_detailed`
+
+```rust
+pub async fn fetch_alerts_detailed(latitude: f64, longitude: f64) -> Result<AlertReport>
+
+pub struct AlertReport {
+    pub alerts: Vec<AlertEntry>,
+    pub region_filtered: bool,
+}
+
+pub struct AlertEntry {
+    pub alert: Alert,
+    pub area_desc: String,
+}
+```
+
+The same dispatch as `fetch_alerts` below, plus two things a consumer cannot
+otherwise know:
+
+- `area_desc` -- the provider's name for the area each entry covers. MeteoAlarm
+  `cap:areaDesc`, NWS `areaDesc` (a `;`-separated county list), the containing
+  ECCC polygon's `areaDesc`. BOM sends none, so it is `""`.
+- `region_filtered` -- `false` only when a MeteoAlarm national feed was returned
+  unfiltered: no EMMA_ID resolved for the location, or the feed carries no
+  EMMA_ID geocodes to filter on (France tags entries with NUTS3), so the entries
+  are national, not local. NWS, ECCC and BOM filter by point, polygon and
+  geohash, and an empty result is trivially filtered, so all of those are `true`.
+
+When an EMMA_ID did resolve, MeteoAlarm entries carrying no geocode are dropped
+rather than shown, since they cannot be placed in any region.
+
 ### `fetch_alerts`
 
 ```rust
 pub async fn fetch_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>>
 ```
 
-Dispatches to the right provider based on location:
+Thin wrapper over `fetch_alerts_detailed` that drops `area_desc` and the
+filtering flag. Dispatches to the right provider based on location:
 
 | Region    | Provider   | Notes                                          |
 |-----------|------------|-------------------------------------------------|

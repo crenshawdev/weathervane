@@ -1,0 +1,20 @@
+---
+source: tests/wire_contract.rs
+expression: round_trip(&alert_report())
+---
+{
+  "alerts": [
+    {
+      "alert": {
+        "id": "NWS-IDP-PROD-123",
+        "event": "Severe Thunderstorm Warning",
+        "severity": "Severe",
+        "headline": "Severe thunderstorm until 10 PM EDT",
+        "description": "Wind gusts to 60 mph expected.",
+        "expires": "2026-06-11T22:00:00Z"
+      },
+      "area_desc": "Warszawa"
+    }
+  ],
+  "region_filtered": true
+}

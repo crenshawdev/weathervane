@@ -132,6 +132,50 @@ EU standard:
 }
 ```
 
+### AlertEntry (array element of the detailed alerts payload)
+```json
+{
+  "alert": {
+    "id": "NWS-IDP-PROD-123",
+    "event": "Severe Thunderstorm Warning",
+    "severity": "Severe",
+    "headline": "Severe thunderstorm until 10 PM EDT",
+    "description": "Wind gusts to 60 mph expected.",
+    "expires": "2026-06-11T22:00:00Z"
+  },
+  "area_desc": "Warszawa"
+}
+```
+
+`area_desc` is the provider's name for the area the entry covers; `""` where
+the provider sends none (BOM), per the missing-strings rule.
+
+### AlertReport (the detailed alerts payload)
+```json
+{
+  "alerts": [
+    {
+      "alert": {
+        "id": "NWS-IDP-PROD-123",
+        "event": "Severe Thunderstorm Warning",
+        "severity": "Severe",
+        "headline": "Severe thunderstorm until 10 PM EDT",
+        "description": "Wind gusts to 60 mph expected.",
+        "expires": "2026-06-11T22:00:00Z"
+      },
+      "area_desc": "Warszawa"
+    }
+  ],
+  "region_filtered": true
+}
+```
+
+`region_filtered` is `false` only when a MeteoAlarm national feed was returned
+unfiltered: no EMMA_ID resolved for the location, or the feed carries no
+EMMA_ID geocodes to filter on (France tags entries with NUTS3), so the entries
+are national, not local. NWS, ECCC and BOM filter by point, polygon and
+geohash, and an empty result is trivially filtered, so all of those are `true`.
+
 ### PollenData
 Inside CAMS European coverage:
 ```json
