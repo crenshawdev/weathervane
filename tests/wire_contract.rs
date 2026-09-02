@@ -10,10 +10,11 @@
 use chrono::{TimeZone, Utc};
 use serde::{de::DeserializeOwned, Serialize};
 use weathervane::{
-    AirQualityData, Alert, AlertSeverity, AqiCategory, AqiSource, CompassDirection, CurrentWeather,
-    DailyForecast, DetectedLocation, Envelope, EnvelopeError, Error, EuAqiCategory, HourlyForecast,
-    LocationResult, MeasurementSystem, NetworkKind, ParseKind, PollenData, PressureUnit,
-    SavedLocation, TemperatureUnit, UsAqiCategory, WeatherCondition, WeatherData, WireError,
+    AirQualityData, Alert, AlertEntry, AlertReport, AlertSeverity, AqiCategory, AqiSource,
+    CompassDirection, CurrentWeather, DailyForecast, DetectedLocation, Envelope, EnvelopeError,
+    Error, EuAqiCategory, HourlyForecast, LocationResult, MeasurementSystem, NetworkKind,
+    ParseKind, PollenData, PressureUnit, SavedLocation, TemperatureUnit, UsAqiCategory,
+    WeatherCondition, WeatherData, WireError,
 };
 
 // ---------------------------------------------------------------------------
@@ -294,6 +295,30 @@ fn alert_shape() {
     );
     insta::assert_snapshot!("alert", pretty);
     insta::assert_snapshot!("canary_alert_severity", json(&AlertSeverity::Severe));
+}
+
+fn alert_entry() -> AlertEntry {
+    AlertEntry {
+        alert: alert(),
+        area_desc: "Warszawa".to_string(),
+    }
+}
+
+fn alert_report() -> AlertReport {
+    AlertReport {
+        alerts: vec![alert_entry()],
+        region_filtered: true,
+    }
+}
+
+#[test]
+fn alert_entry_shape() {
+    insta::assert_snapshot!("alert_entry", round_trip(&alert_entry()));
+}
+
+#[test]
+fn alert_report_shape() {
+    insta::assert_snapshot!("alert_report", round_trip(&alert_report()));
 }
 
 // ---------------------------------------------------------------------------
