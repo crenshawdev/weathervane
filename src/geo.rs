@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::collections::HashMap;
+use std::sync::RwLock;
+
 use serde::Deserialize;
 
 use crate::client::http_client;
@@ -286,7 +289,7 @@ pub(crate) struct NominatimResponse {
 }
 
 /// Address details from Nominatim.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct NominatimAddress {
     /// Local-language country name. Display only - `country_code` is what the
     /// MeteoAlarm lookup keys on, because Nominatim is deliberately not asked
@@ -308,7 +311,50 @@ pub(crate) struct MeteoAlarmCodenames {
     pub codes: std::collections::HashMap<String, String>,
 }
 
-/// Reverse-geocodes a coordinate to an address.
+/// Reverse geocodes, cached per coordinate for the process lifetime.
+static REVERSE_GEOCODE_CACHE: RwLock<Option<HashMap<String, NominatimAddress>>> = RwLock::new(None);
+
+/// Reverse-geocodes a coordinate to an address, from cache after the first call.
+///
+/// Nominatim's usage policy requires results to be cached client-side, and a
+/// consumer that refreshes on a timer sends the same coordinates every time.
+/// Cached for the process lifetime, in the shape of `STATION_CACHE`: a
+/// coordinate's address does not move, and since `fetch_alerts` returns `Err`
+/// when the country cannot be determined, being blocked for repeat queries
+/// would mean no European alerts at all. Failures are not cached, so a
+/// transient miss retries on the next call.
+pub(crate) async fn reverse_geocode(latitude: f64, longitude: f64) -> Result<NominatimAddress> {
+    let key = cache_key(latitude, longitude);
+    if let Some(address) = cached_address(&key) {
+        tracing::debug!("Reverse geocode cache hit for {}", key);
+        return Ok(address);
+    }
+
+    let address = fetch_reverse_geocode(latitude, longitude).await?; // no lock held across .await
+    cache_address(&key, &address);
+    Ok(address)
+}
+
+/// The same strings the request URL carries, so a hit is exactly a repeated
+/// query in the sense Nominatim's policy uses.
+fn cache_key(latitude: f64, longitude: f64) -> String {
+    format!("{},{}", latitude, longitude)
+}
+
+fn cached_address(key: &str) -> Option<NominatimAddress> {
+    let guard = REVERSE_GEOCODE_CACHE.read().ok()?;
+    guard.as_ref()?.get(key).cloned()
+}
+
+fn cache_address(key: &str, address: &NominatimAddress) {
+    if let Ok(mut guard) = REVERSE_GEOCODE_CACHE.write() {
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(key.to_string(), address.clone());
+    }
+}
+
+/// The network call behind `reverse_geocode`.
 ///
 /// One call serves both the country (MeteoAlarm feed selection) and the place
 /// names (EMMA_ID region matching), which were previously two separate lookups
@@ -318,7 +364,7 @@ pub(crate) struct MeteoAlarmCodenames {
 /// is in local language - `PL1465` is "Warszawa", not "Warsaw" - so asking for
 /// English names would break every EMMA_ID match in Europe. The country is
 /// identified by `country_code` instead, which carries no language at all.
-pub(crate) async fn reverse_geocode(latitude: f64, longitude: f64) -> Result<NominatimAddress> {
+async fn fetch_reverse_geocode(latitude: f64, longitude: f64) -> Result<NominatimAddress> {
     let url = format!(
         "https://nominatim.openstreetmap.org/reverse?lat={}&lon={}&format=json",
         latitude, longitude
@@ -603,5 +649,53 @@ mod tests {
             address_from_json("not json"),
             Err(Error::Parse(ParseKind::Json))
         ));
+    }
+
+    // The cache tests share one process-wide static and run in parallel, so
+    // each uses a key no other test touches.
+
+    #[test]
+    fn cache_key_matches_url_formatting() {
+        // The key must be the exact strings the request URL is built from, so
+        // that a cache hit is a repeated query and nothing looser.
+        let (lat, lon) = (52.232, 21.0067);
+        let url = format!(
+            "https://nominatim.openstreetmap.org/reverse?lat={}&lon={}&format=json",
+            lat, lon
+        );
+        assert_eq!(cache_key(lat, lon), "52.232,21.0067");
+        assert!(url.contains("lat=52.232&lon=21.0067"));
+    }
+
+    #[test]
+    fn cached_address_misses_then_hits() {
+        let key = "test-miss-then-hit";
+        assert!(cached_address(key).is_none());
+
+        let body = r#"{"address":{"country":"Polska","country_code":"pl","city":"Warszawa"}}"#;
+        cache_address(key, &address_from_json(body).unwrap());
+
+        let hit = cached_address(key).expect("cached after a successful decode");
+        assert_eq!(hit.country_code.as_deref(), Some("pl"));
+        assert_eq!(hit.city.as_deref(), Some("Warszawa"));
+    }
+
+    #[test]
+    fn cache_address_last_write_wins() {
+        // No TTL and no first-wins guard: a later successful lookup replaces
+        // the earlier one, same as STATION_CACHE.
+        let key = "test-last-write-wins";
+        cache_address(
+            key,
+            &address_from_json(r#"{"address":{"country_code":"pl"}}"#).unwrap(),
+        );
+        cache_address(
+            key,
+            &address_from_json(r#"{"address":{"country_code":"cz"}}"#).unwrap(),
+        );
+        assert_eq!(
+            cached_address(key).unwrap().country_code.as_deref(),
+            Some("cz")
+        );
     }
 }
