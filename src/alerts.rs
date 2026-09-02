@@ -77,8 +77,9 @@ pub struct AlertEntry {
 pub struct AlertReport {
     pub alerts: Vec<AlertEntry>,
     /// `false` only when a MeteoAlarm national feed was returned unfiltered
-    /// because no region could be matched for the location, by EMMA_ID or by
-    /// area name, so the entries are national, not local. NWS, ECCC and BOM
+    /// because no region could be matched for the location, by EMMA_ID, by
+    /// area name, or by local-language area name, so the entries are
+    /// national, not local. NWS, ECCC and BOM
     /// filter by point, polygon and geohash respectively, and an empty result
     /// is trivially filtered, so all of those are `true`.
     pub region_filtered: bool,
@@ -253,6 +254,48 @@ struct MeteoAlarmGeocode {
     value: Option<String>,
 }
 
+/// MeteoAlarm v1 JSON API response, `/api/v1/warnings/feeds-<slug>`. Read
+/// only for its per-language `areaDesc` values; the atom feed stays the
+/// source of alerts.
+#[derive(Debug, Deserialize)]
+struct MeteoAlarmJsonFeed {
+    #[serde(default)]
+    warnings: Vec<MeteoAlarmJsonWarning>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MeteoAlarmJsonWarning {
+    alert: MeteoAlarmJsonAlert,
+}
+
+#[derive(Debug, Deserialize)]
+struct MeteoAlarmJsonAlert {
+    #[serde(default)]
+    info: Vec<MeteoAlarmJsonInfo>,
+}
+
+/// One `info` block per language (`en-GB`, `el-GR`, `bg`, ...), each with
+/// the same areas in the same order.
+#[derive(Debug, Deserialize)]
+struct MeteoAlarmJsonInfo {
+    language: Option<String>,
+    #[serde(default)]
+    area: Vec<MeteoAlarmJsonArea>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MeteoAlarmJsonArea {
+    #[serde(rename = "areaDesc")]
+    area_desc: Option<String>,
+}
+
+/// One region as the feed names it in the local language and in English.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct LocalArea {
+    local: String,
+    english: String,
+}
+
 /// Resolves the user's EMMA_ID by matching their place names against the
 /// MeteoAlarm codename list.
 async fn resolve_user_emma_id(address: &NominatimAddress, country_code: &str) -> Option<String> {
@@ -325,6 +368,85 @@ async fn fetch_meteoalarm_codenames_uncached() -> Option<MeteoAlarmCodenames> {
             None
         }
     }
+}
+
+/// The feed's own local-language area names, paired with the English names
+/// the atom feed uses. Read from the v1 JSON API, whose alerts carry one
+/// `info` block per language. Expired warnings are kept: this is a name
+/// inventory, not an alert list, and a larger one matches more quiet regions.
+/// Not cached: it is fetched only on the non-Latin miss path, once per
+/// refresh, and a fresh inventory is worth more than one saved request.
+async fn fetch_meteoalarm_local_areas(slug: &str) -> Option<Vec<LocalArea>> {
+    let url = format!(
+        "https://feeds.meteoalarm.org/api/v1/warnings/feeds-{}",
+        slug
+    );
+
+    let client = match http_client() {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::warn!(
+                "No HTTP client for MeteoAlarm local area names ({}); national feed stays unfiltered",
+                e
+            );
+            return None;
+        }
+    };
+
+    let response = match client.get(&url).send().await {
+        Ok(response) => response,
+        Err(e) => {
+            tracing::warn!(
+                "MeteoAlarm local area names fetch failed ({}); national feed stays unfiltered",
+                e
+            );
+            return None;
+        }
+    };
+
+    match response.json::<MeteoAlarmJsonFeed>().await {
+        Ok(feed) => Some(local_areas_from_json(feed)),
+        Err(e) => {
+            tracing::warn!(
+                "MeteoAlarm local area names decode failed ({}); national feed stays unfiltered",
+                e
+            );
+            None
+        }
+    }
+}
+
+/// Every (local name, English name) pair the feed carries, sorted and
+/// deduplicated. Every non-English block pairs with every English block
+/// (Serbia sends `sr-Latn` and `sr` beside `en-GB`); within a block, area
+/// `i` pairs with area `i`, which is how the sampled feeds are laid out.
+fn local_areas_from_json(feed: MeteoAlarmJsonFeed) -> Vec<LocalArea> {
+    let mut pairs = Vec::new();
+    for warning in feed.warnings {
+        let (english, local): (Vec<_>, Vec<_>) = warning.alert.info.into_iter().partition(|info| {
+            info.language
+                .as_deref()
+                .map(|l| l.starts_with("en"))
+                .unwrap_or(false)
+        });
+        for local_info in &local {
+            for english_info in &english {
+                for (l, e) in local_info.area.iter().zip(english_info.area.iter()) {
+                    if let (Some(l), Some(e)) = (l.area_desc.as_deref(), e.area_desc.as_deref()) {
+                        if !l.is_empty() && !e.is_empty() {
+                            pairs.push(LocalArea {
+                                local: l.to_string(),
+                                english: e.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    pairs.sort();
+    pairs.dedup();
+    pairs
 }
 
 /// Place names to try, most specific first.
@@ -452,6 +574,14 @@ const AREA_AFFIXES: &[&str] = &[
     "okres",
     "kraj",
     "oblast",
+    "περιφερεια",
+    "περιφερειακη",
+    "ενοτητα",
+    "δημος",
+    "νομος",
+    "област",
+    "община",
+    "град",
 ];
 
 /// Lowercase, diacritics folded, split into tokens, administrative affixes
@@ -471,6 +601,43 @@ fn area_tokens(name: &str) -> Vec<String> {
         .collect()
 }
 
+fn is_latin(c: char) -> bool {
+    c.is_ascii_alphabetic()
+        || ('\u{00C0}'..='\u{024F}').contains(&c)
+        || ('\u{1E00}'..='\u{1EFF}').contains(&c)
+}
+
+/// True when any name carries a letter outside the Latin script, which is
+/// when the atom feed's English area names cannot match and the
+/// local-language inventory is worth a request.
+fn has_non_latin(names: &[String]) -> bool {
+    names
+        .iter()
+        .flat_map(|t| t.chars())
+        .any(|c| c.is_alphabetic() && !is_latin(c))
+}
+
+/// Token equality with one concession to inflection: two non-Latin tokens of
+/// five or more characters match when one is the other plus at most two
+/// trailing characters ("αττικη" and "αττικης"). Latin tokens compare exactly,
+/// so nothing changes for Latin-script countries.
+fn tokens_equal(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let (shorter, longer) = if a.chars().count() <= b.chars().count() {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let non_latin = |s: &str| s.chars().any(|c| c.is_alphabetic() && !is_latin(c));
+    non_latin(shorter)
+        && non_latin(longer)
+        && shorter.chars().count() >= 5
+        && longer.starts_with(shorter)
+        && longer.chars().count() - shorter.chars().count() <= 2
+}
+
 /// How well one place name fits one area name, weakest first so `max` picks
 /// the strongest.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -482,14 +649,20 @@ enum AreaMatch {
 }
 
 /// Returns None when the two do not relate. No substring or prefix compare on
-/// tokens: "seine" does not fit "seinemaritime". The shorter side must carry
-/// at least one token of three or more characters, so a stray "i" or "de"
+/// Latin tokens: "seine" does not fit "seinemaritime"; non-Latin tokens get
+/// the `tokens_equal` inflection allowance. The shorter side must carry at
+/// least one token of three or more characters, so a stray "i" or "de"
 /// cannot anchor a match on its own.
 fn rank_area_match(term_tokens: &[String], area_tokens: &[String]) -> Option<AreaMatch> {
     if term_tokens.is_empty() || area_tokens.is_empty() {
         return None;
     }
-    if term_tokens == area_tokens {
+    if term_tokens.len() == area_tokens.len()
+        && term_tokens
+            .iter()
+            .zip(area_tokens)
+            .all(|(t, a)| tokens_equal(t, a))
+    {
         return Some(AreaMatch::Exact);
     }
     let (shorter, longer) = if term_tokens.len() <= area_tokens.len() {
@@ -498,7 +671,11 @@ fn rank_area_match(term_tokens: &[String], area_tokens: &[String]) -> Option<Are
         (area_tokens, term_tokens)
     };
     let anchored = shorter.iter().any(|t| t.chars().count() >= 3);
-    if anchored && shorter.iter().all(|t| longer.contains(t)) {
+    if anchored
+        && shorter
+            .iter()
+            .all(|t| longer.iter().any(|l| tokens_equal(t, l)))
+    {
         Some(AreaMatch::Tokens)
     } else {
         None
@@ -603,10 +780,20 @@ async fn fetch_meteoalarm_alerts(latitude: f64, longitude: f64) -> Result<AlertR
     let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml_text)?;
 
     let search_terms = emma_search_terms(&address);
-    Ok(meteoalarm_alerts_from_feed(
-        feed,
-        &user_emma_id,
+    let report = meteoalarm_alerts_from_feed(feed, &user_emma_id, &search_terms, country);
+
+    // Stage 3, only after a stage-2 miss for a non-Latin place name: the
+    // feed's local-language area names, one request, no cache.
+    if report.region_filtered || !has_non_latin(&search_terms) {
+        return Ok(report);
+    }
+    let Some(local_areas) = fetch_meteoalarm_local_areas(slug).await else {
+        return Ok(report);
+    };
+    Ok(apply_local_area_match(
+        report,
         &search_terms,
+        &local_areas,
         country,
     ))
 }
@@ -628,7 +815,9 @@ fn entry_emma_id(entry: &MeteoAlarmEntry) -> Option<&str> {
 /// that are alerting, it is the only stage that can tell a quiet day from a
 /// miss. Stage 2, when stage 1 has no usable filter: the user's place names
 /// are matched against the feed's own `areaDesc` values. A hit filters to that
-/// area; a miss keeps the national feed and says so.
+/// area; a miss keeps the national feed and says so. Stage 3, in
+/// `fetch_meteoalarm_alerts`, retries a stage-2 miss for non-Latin place
+/// names against the feed's local-language names (`apply_local_area_match`).
 fn meteoalarm_alerts_from_feed(
     feed: MeteoAlarmFeed,
     user_emma_id: &Option<String>,
@@ -753,6 +942,63 @@ fn meteoalarm_alerts_from_feed(
                 region_filtered: false,
             }
         }
+    }
+}
+
+/// Stage 3: the stage-2 miss retried against the feed's local-language area
+/// names. A hit narrows the already-parsed entries to the region whose
+/// English name is the paired one; a miss returns the report unchanged.
+fn apply_local_area_match(
+    report: AlertReport,
+    search_terms: &[String],
+    local_areas: &[LocalArea],
+    country: &str,
+) -> AlertReport {
+    let local_names: Vec<String> = local_areas.iter().map(|a| a.local.clone()).collect();
+    if !has_non_latin(&local_names) {
+        // Israel's `he-IL` block repeats the English names; say so rather than
+        // report a miss that no place name could ever have avoided.
+        tracing::warn!(
+            "MeteoAlarm ({}) JSON feed carries no local-language area names ({} English only); \
+            national feed stays unfiltered",
+            country,
+            local_names.len()
+        );
+        return report;
+    }
+    let Some(local) = match_area(search_terms, &local_names) else {
+        tracing::warn!(
+            "No local-language area name matched {:?} among {} for MeteoAlarm ({}); \
+            national feed stays unfiltered",
+            search_terms,
+            local_names.len(),
+            country
+        );
+        return report;
+    };
+    // Raw compare: the parsed atom `area_desc` and the JSON English name are
+    // byte-identical (quick_xml has already unescaped the atom's extra level).
+    // Token equality would collapse "Sofia-city" and "Sofia-region".
+    let english: Vec<&str> = local_areas
+        .iter()
+        .filter(|a| a.local == local)
+        .map(|a| a.english.as_str())
+        .collect();
+    let alerts: Vec<AlertEntry> = report
+        .alerts
+        .into_iter()
+        .filter(|entry| english.contains(&entry.area_desc.as_str()))
+        .collect();
+    tracing::debug!(
+        "Fetched {} alert(s) from MeteoAlarm ({}), filtered to area {:?} via its local name {:?}",
+        alerts.len(),
+        country,
+        english,
+        local
+    );
+    AlertReport {
+        alerts,
+        region_filtered: true,
     }
 }
 
@@ -2454,5 +2700,290 @@ mod tests {
         cache_codenames(&codenames(&[("PT021", "Faro")]));
         let hit = cached_codenames().expect("cached after a successful fetch");
         assert_eq!(hit.codes.get("PT021").map(String::as_str), Some("Faro"));
+    }
+
+    fn local_areas(pairs: &[(&str, &str)]) -> Vec<LocalArea> {
+        pairs
+            .iter()
+            .map(|(local, english)| LocalArea {
+                local: local.to_string(),
+                english: english.to_string(),
+            })
+            .collect()
+    }
+
+    /// Live Greek pairs from the v1 JSON feed, 2026-09-02, including the
+    /// source's stray tonos on Δωδεκάνησα and its literal `&amp;`.
+    fn greece_local_areas() -> Vec<LocalArea> {
+        local_areas(&[
+            ("Ήπειρο", "Epirus"),
+            ("Ανατολική Μακεδονία", "East Makedonia"),
+            ("Ανατολική Πελοπόννησο", "East Peloponnisos"),
+            ("Ανατολική Στερεά &amp; Έυβοια", "East Sterea &amp; Evvoia"),
+            ("Αττική", "Attiki"),
+            ("Δυτική Μακεδονία", "West Makedonia"),
+            ("Δυτική Πελοπόννησο", "West Peloponnisos"),
+            ("Δυτική Στερεά", "West Sterea"),
+            ("Δωδεκάνησα΄", "Dodekanisa Islands"),
+            ("Θεσσαλία", "Thessalia"),
+            ("Θράκη", "Thraki"),
+            ("Κεντρική Μακεδονία", "Central Makedonia"),
+            ("Κρήτη", "Kriti"),
+            ("Κυκλάδες", "Kyklades"),
+            (
+                "Νησιά Βορειοανατολικού Αιγαίου",
+                "North East Aegean Islands",
+            ),
+            ("Νησιά Ιονίου", "Ionion Islands"),
+        ])
+    }
+
+    /// Live Bulgarian pairs from the v1 JSON feed, 2026-09-02.
+    fn bulgaria_local_areas() -> Vec<LocalArea> {
+        local_areas(&[
+            ("Благоевград", "Blagoevgrad"),
+            ("Бургас", "Burgas"),
+            ("Варна", "Varna"),
+            ("Велико Търново", "Veliko Tarnovo"),
+            ("Видин", "Vidin"),
+            ("Враца", "Vratsa"),
+            ("Габрово", "Gabrovo"),
+            ("Добрич", "Dobrich"),
+            ("Кърджали", "Kardzhali"),
+            ("Кюстендил", "Kyustendil"),
+            ("Ловеч", "Lovech"),
+            ("Монтана", "Montana"),
+            ("Пазарджик", "Pazardzhik"),
+            ("Перник", "Pernik"),
+            ("Плевен", "Pleven"),
+            ("Пловдив", "Plovdiv"),
+            ("Разград", "Razgrad"),
+            ("Русе", "Ruse"),
+            ("Силистра", "Silistra"),
+            ("Сливен", "Sliven"),
+            ("Смолян", "Smolyan"),
+            ("Софийска област", "Sofia-region"),
+            ("София град", "Sofia-city"),
+            ("Стара Загора", "Stara Zagora"),
+            ("Търговище", "Targovishte"),
+            ("Хасково", "Haskovo"),
+            ("Шумен", "Shumen"),
+            ("Ямбол", "Yambol"),
+        ])
+    }
+
+    fn local_names(areas: &[LocalArea]) -> Vec<String> {
+        areas.iter().map(|a| a.local.clone()).collect()
+    }
+
+    /// What `emma_search_terms` builds from Nominatim's Athens reverse
+    /// geocode (city, municipality, county, state), 2026-09-02.
+    fn athens_terms() -> Vec<String> {
+        strings(&[
+            "Αθήνα",
+            "Stadt Αθήνα",
+            "Δήμος Αθηναίων",
+            "Περιφερειακή Ενότητα Κεντρικού Τομέα Αθηνών",
+            "Kreis Περιφερειακή Ενότητα Κεντρικού Τομέα Αθηνών",
+            "Περιφέρεια Αττικής",
+        ])
+    }
+
+    /// Nominatim's Sofia reverse geocode (city, county, state), 2026-09-02.
+    fn sofia_terms() -> Vec<String> {
+        strings(&[
+            "София",
+            "Stadt София",
+            "Средец",
+            "Kreis Средец",
+            "София-град",
+        ])
+    }
+
+    /// The Greek atom feed as it reaches stage 2: English area names, and
+    /// the double-escaped ampersand the source really sends.
+    fn greece_report() -> AlertReport {
+        let xml = format!(
+            "<feed>{}{}{}</feed>",
+            emma_entry("gr-1", "GR001", "Attiki"),
+            emma_entry("gr-2", "GR002", "Kriti"),
+            emma_entry("gr-3", "GR003", "East Sterea &amp;amp; Evvoia")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(feed, &None, &athens_terms(), "Ελλάς");
+        assert!(
+            !report.region_filtered,
+            "Greek terms cannot match the English block"
+        );
+        assert_eq!(report.alerts.len(), 3);
+        report
+    }
+
+    #[test]
+    fn is_latin_and_has_non_latin() {
+        assert!(!has_non_latin(&strings(&["Évora", "Łódź", "Setúbal"])));
+        assert!(has_non_latin(&strings(&["Αθήνα"])));
+        assert!(has_non_latin(&strings(&["София"])));
+        assert!(has_non_latin(&strings(&["ירושלים"])));
+        assert!(has_non_latin(&strings(&["Lisboa", "Αθήνα"])));
+        assert!(!has_non_latin(&[]));
+    }
+
+    #[test]
+    fn area_tokens_drops_greek_and_bulgarian_affixes() {
+        assert_eq!(area_tokens("Περιφέρεια Αττικής"), strings(&["αττικης"]));
+        assert_eq!(area_tokens("Δήμος Αθηναίων"), strings(&["αθηναιων"]));
+        assert_eq!(area_tokens("София град"), strings(&["софия"]));
+        // NFD splits й into и plus a breve and the fold drops the breve; both
+        // sides fold the same way, so the compare is unaffected.
+        assert_eq!(area_tokens("Софийска област"), strings(&["софииска"]));
+    }
+
+    #[test]
+    fn tokens_equal_genitive() {
+        assert!(tokens_equal("αττικη", "αττικης"));
+        assert!(tokens_equal("αττικης", "αττικη"));
+        assert!(tokens_equal("κρητη", "κρητης"));
+        assert!(!tokens_equal("αθηνα", "αθηναιων"));
+        assert!(!tokens_equal("paris", "parise"));
+        assert!(!tokens_equal("αττι", "αττικη"));
+        assert!(!tokens_equal("софия", "софииска"));
+    }
+
+    #[test]
+    fn match_area_athens_against_local_names() {
+        // The first three terms miss (Athens is not a region); the state
+        // "Περιφέρεια Αττικής" meets "Αττική" through the affix drop and the
+        // genitive allowance.
+        assert_eq!(
+            match_area(&athens_terms(), &local_names(&greece_local_areas())),
+            Some("Αττική".to_string())
+        );
+    }
+
+    #[test]
+    fn match_area_sofia_against_local_names() {
+        // "София" fits "София град" on the first term. "Софийска област" does
+        // not compete: "софия" is not a prefix of "софииска".
+        assert_eq!(
+            match_area(&sofia_terms(), &local_names(&bulgaria_local_areas())),
+            Some("София град".to_string())
+        );
+    }
+
+    #[test]
+    fn local_areas_from_json_pairs_blocks() {
+        // Two Greek warnings sharing a region, one Serbian-shaped warning with
+        // two local blocks, and an area with no name in either language.
+        let json = r#"{"warnings": [
+            {"alert": {"info": [
+                {"language": "en-GB", "area": [{"areaDesc": "Attiki"}]},
+                {"language": "el-GR", "area": [{"areaDesc": "Αττική"}]}
+            ]}},
+            {"alert": {"info": [
+                {"language": "el-GR", "area": [{"areaDesc": "Κρήτη"}]},
+                {"language": "en-GB", "area": [{"areaDesc": "Kriti"}]}
+            ]}},
+            {"alert": {"info": [
+                {"language": "en-GB", "area": [{"areaDesc": "Attiki"}]},
+                {"language": "el-GR", "area": [{"areaDesc": "Αττική"}]}
+            ]}},
+            {"alert": {"info": [
+                {"language": "sr-Latn", "area": [{"areaDesc": "Beograd"}]},
+                {"language": "sr", "area": [{"areaDesc": "Београд"}]},
+                {"language": "en-GB", "area": [{"areaDesc": "Belgrade"}]}
+            ]}},
+            {"alert": {"info": [
+                {"language": "en-GB", "area": [{}]},
+                {"language": "el-GR", "area": [{"areaDesc": ""}]}
+            ]}},
+            {"alert": {}}
+        ]}"#;
+        let feed: MeteoAlarmJsonFeed = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            local_areas_from_json(feed),
+            local_areas(&[
+                ("Beograd", "Belgrade"),
+                ("Αττική", "Attiki"),
+                ("Κρήτη", "Kriti"),
+                ("Београд", "Belgrade"),
+            ])
+        );
+    }
+
+    #[test]
+    fn apply_local_area_match_filters_by_english_name() {
+        let report = apply_local_area_match(
+            greece_report(),
+            &athens_terms(),
+            &greece_local_areas(),
+            "Ελλάς",
+        );
+
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(report.alerts[0].area_desc, "Attiki");
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn apply_local_area_match_compares_parsed_area_desc_raw() {
+        // The atom source double-escapes the ampersand and quick_xml unescapes
+        // one level, so the parsed entry equals the JSON English name byte for
+        // byte. Terms that pick the Sterea region keep only that entry.
+        let terms = strings(&["Ανατολική Στερεά"]);
+        let report =
+            apply_local_area_match(greece_report(), &terms, &greece_local_areas(), "Ελλάς");
+
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(report.alerts[0].area_desc, "East Sterea &amp; Evvoia");
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn apply_local_area_match_keeps_city_not_region() {
+        // "Sofia-city" and "Sofia-region" fold to the same tokens once the
+        // affixes drop; the raw compare keeps them apart.
+        let xml = format!(
+            "<feed>{}{}{}</feed>",
+            nuts3_entry("bg-1", "BG411", "Sofia-city"),
+            nuts3_entry("bg-2", "BG412", "Sofia-region"),
+            nuts3_entry("bg-3", "BG413", "Blagoevgrad")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(feed, &None, &sofia_terms(), "България");
+        assert!(!report.region_filtered);
+
+        let report =
+            apply_local_area_match(report, &sofia_terms(), &bulgaria_local_areas(), "България");
+
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(report.alerts[0].area_desc, "Sofia-city");
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn apply_local_area_match_miss_leaves_report() {
+        let terms = strings(&["Θεσσαλονίκη"]);
+        let report =
+            apply_local_area_match(greece_report(), &terms, &greece_local_areas(), "Ελλάς");
+
+        assert_eq!(report.alerts.len(), 3);
+        assert!(!report.region_filtered);
+    }
+
+    #[test]
+    fn apply_local_area_match_skips_latin_only_inventory() {
+        // Israel's he-IL block repeats the English names, so Hebrew terms can
+        // never match; the report passes through untouched.
+        let israel = local_areas(&[
+            ("Judea Mountains", "Judea Mountains"),
+            ("Gush Dan", "Gush Dan"),
+        ]);
+        let terms = strings(&["ירושלים", "מחוז ירושלים"]);
+        let report = apply_local_area_match(greece_report(), &terms, &israel, "ישראל");
+
+        assert_eq!(report.alerts.len(), 3);
+        assert!(!report.region_filtered);
     }
 }
