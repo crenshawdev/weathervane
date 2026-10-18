@@ -171,6 +171,29 @@ struct IpApiResponse {
     country: Option<String>,
 }
 
+/// Parser entry points for the fuzz targets in `fuzz/`.
+#[cfg(feature = "fuzzing")]
+pub(crate) mod fuzz {
+    use super::*;
+
+    /// Open-Meteo geocoding JSON.
+    pub fn open_meteo_geocoding(data: &[u8]) {
+        if let Ok(response) = serde_json::from_slice::<GeocodingResponse>(data) {
+            for result in response.results.iter().flatten() {
+                let _ = LocationResult::from_geocoding_result(result);
+            }
+        }
+    }
+
+    /// ip-api.com JSON. It arrives over plain HTTP, so anyone on the path can
+    /// write it.
+    pub fn ip_api(data: &[u8]) {
+        if let Ok(response) = serde_json::from_slice::<IpApiResponse>(data) {
+            let _ = detected_from_ip_api(response);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

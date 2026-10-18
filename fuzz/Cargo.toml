@@ -1,0 +1,103 @@
+[package]
+name = "weathervane-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.weathervane]
+path = ".."
+features = ["fuzzing"]
+
+# Kept out of the main crate's build, tests and package.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "nws"
+path = "fuzz_targets/nws.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "meteoalarm_atom"
+path = "fuzz_targets/meteoalarm_atom.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "meteoalarm_json"
+path = "fuzz_targets/meteoalarm_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "meteoalarm_match"
+path = "fuzz_targets/meteoalarm_match.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "eccc_cap"
+path = "fuzz_targets/eccc_cap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bom"
+path = "fuzz_targets/bom.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nominatim"
+path = "fuzz_targets/nominatim.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "open_meteo"
+path = "fuzz_targets/open_meteo.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jma"
+path = "fuzz_targets/jma.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "aqicn"
+path = "fuzz_targets/aqicn.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ip_api"
+path = "fuzz_targets/ip_api.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "time"
+path = "fuzz_targets/time.rs"
+test = false
+doc = false
+bench = false

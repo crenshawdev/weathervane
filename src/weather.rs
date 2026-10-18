@@ -343,6 +343,19 @@ struct DailyData {
     sunset: Vec<String>,
 }
 
+/// Parser entry points for the fuzz targets in `fuzz/`.
+#[cfg(feature = "fuzzing")]
+pub(crate) mod fuzz {
+    use super::*;
+
+    /// Open-Meteo forecast JSON.
+    pub fn open_meteo_weather(data: &[u8]) {
+        if let Ok(response) = serde_json::from_slice::<OpenMeteoResponse>(data) {
+            let _ = weather_from_open_meteo(response, 0.0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

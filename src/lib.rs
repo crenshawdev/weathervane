@@ -26,6 +26,10 @@ pub mod units;
 pub mod weather;
 pub mod wire;
 
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzz_api;
+
 // Re-export the primary types at crate root for convenience.
 pub use air_quality::{
     AirQualityData, AqiCategory, AqiSource, AqiStandard, EuAqiCategory, UsAqiCategory,

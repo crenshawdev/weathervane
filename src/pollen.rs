@@ -100,6 +100,19 @@ struct PollenCurrent {
     ragweed_pollen: Option<f32>,
 }
 
+/// Parser entry points for the fuzz targets in `fuzz/`.
+#[cfg(feature = "fuzzing")]
+pub(crate) mod fuzz {
+    use super::*;
+
+    /// Open-Meteo pollen JSON.
+    pub fn open_meteo_pollen(data: &[u8]) {
+        if let Ok(response) = serde_json::from_slice::<PollenResponse>(data) {
+            let _ = from_current(&response.current);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
