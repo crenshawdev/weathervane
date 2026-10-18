@@ -229,6 +229,38 @@ struct RawObservation {
     temp: Option<Vec<f64>>,
 }
 
+/// Parser entry points for the fuzz targets in `fuzz/`.
+#[cfg(feature = "fuzzing")]
+pub(crate) mod fuzz {
+    use super::*;
+
+    /// AMeDAS `latest_time.txt`, station table and observation map.
+    pub fn jma(data: &[u8]) {
+        if let Ok(text) = std::str::from_utf8(data) {
+            let _ = parse_iso_to_compact(text.trim());
+        }
+        if let Ok(raw) = serde_json::from_slice::<HashMap<String, RawStation>>(data) {
+            for (code, station) in raw {
+                let _ = parse_station_entry(code, station);
+            }
+        }
+        if let Ok(map) = serde_json::from_slice::<HashMap<String, RawObservation>>(data) {
+            let candidates: Vec<(f64, Station)> = map
+                .keys()
+                .map(|code| {
+                    let station = Station {
+                        code: code.clone(),
+                        lat: 0.0,
+                        lon: 0.0,
+                    };
+                    (0.0, station)
+                })
+                .collect();
+            let _ = select_temp_from_map(&candidates, &map, TemperatureUnit::Fahrenheit);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

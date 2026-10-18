@@ -8,6 +8,11 @@ mempalace.yaml
 entities.json
 
 # Local AI-tooling state and generated artifacts
-.claude/
+.claude/*
+!.claude/claude-security-guidance.md
 graphify-out/
 tests/snapshots/*.snap.new
+
+# sentinel audit output: unfixed vulnerability findings, never commit
+audit/
+CLAUDE-SECURITY-*/

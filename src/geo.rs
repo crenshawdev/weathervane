@@ -389,6 +389,15 @@ fn address_from_json(body: &str) -> Result<NominatimAddress> {
     response.address.ok_or(Error::LocationDetection)
 }
 
+/// Parser entry points for the fuzz targets in `fuzz/`.
+#[cfg(feature = "fuzzing")]
+pub(crate) mod fuzz {
+    /// Nominatim `/reverse` JSON.
+    pub fn nominatim(body: &str) {
+        let _ = super::address_from_json(body);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

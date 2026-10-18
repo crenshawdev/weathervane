@@ -49,6 +49,15 @@ fn extract_aqi(json_text: &str) -> Option<i32> {
     value.get("data")?.get("aqi")?.as_i64().map(|v| v as i32)
 }
 
+/// Parser entry points for the fuzz targets in `fuzz/`.
+#[cfg(feature = "fuzzing")]
+pub(crate) mod fuzz {
+    /// aqicn `/feed` response body.
+    pub fn aqicn(body: &str) {
+        let _ = super::extract_aqi(body);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

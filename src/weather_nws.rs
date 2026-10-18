@@ -285,6 +285,25 @@ impl NwsObservation {
     }
 }
 
+/// Parser entry points for the fuzz targets in `fuzz/`.
+#[cfg(feature = "fuzzing")]
+pub(crate) mod fuzz {
+    use super::*;
+
+    /// NWS `/points`, station list and latest-observation JSON.
+    pub fn nws_weather(data: &[u8]) {
+        let _ = serde_json::from_slice::<PointsResponse>(data);
+        let _ = serde_json::from_slice::<StationsResponse>(data);
+        if let Ok(obs) = serde_json::from_slice::<ObservationResponse>(data) {
+            let _ = parse_observation(
+                obs.properties,
+                TemperatureUnit::Fahrenheit,
+                MeasurementSystem::Imperial,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

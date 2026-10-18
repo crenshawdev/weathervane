@@ -1394,6 +1394,89 @@ fn bom_alerts_from_response(data: Vec<BomWarning>) -> Vec<AlertEntry> {
         .collect()
 }
 
+/// Parser entry points for the fuzz targets in `fuzz/`.
+#[cfg(feature = "fuzzing")]
+pub(crate) mod fuzz {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    /// NWS `/alerts/active` GeoJSON.
+    pub fn nws_alerts(data: &[u8]) {
+        if let Ok(response) = serde_json::from_slice::<NwsAlertsResponse>(data) {
+            let _ = nws_alerts_from_response(response);
+        }
+    }
+
+    /// MeteoAlarm atom feed XML, unfiltered and under an EMMA_ID filter, with
+    /// Latin and non-Latin place names for the area-name stage.
+    pub fn meteoalarm_atom(xml: &str) {
+        let terms = ["Wien".to_string(), "Αττική".to_string()];
+        for filter in [None, Some("AT001".to_string())] {
+            if let Ok(feed) = quick_xml::de::from_str::<MeteoAlarmFeed>(xml) {
+                let _ = meteoalarm_alerts_from_feed(feed, &filter, &terms, "fuzz");
+            }
+        }
+    }
+
+    /// MeteoAlarm v1 JSON, through the local-language area match.
+    pub fn meteoalarm_json(data: &[u8]) {
+        let Ok(feed) = serde_json::from_slice::<MeteoAlarmJsonFeed>(data) else {
+            return;
+        };
+        let local_areas = local_areas_from_json(feed);
+        let report = AlertReport {
+            alerts: vec![],
+            region_filtered: false,
+        };
+        let terms = ["Αττική".to_string(), "София".to_string()];
+        let _ = apply_local_area_match(report, &terms, &local_areas, "fuzz");
+    }
+
+    /// Place-name matching. Every input is third-party text: the place names
+    /// from Nominatim, the codename table from GitHub, the area names from
+    /// the feed.
+    pub fn meteoalarm_match(
+        place_names: Vec<String>,
+        country_code: &str,
+        codenames: Vec<(String, String)>,
+        area_names: Vec<String>,
+    ) {
+        let mut names = place_names.into_iter();
+        let address = NominatimAddress {
+            country: None,
+            country_code: Some(country_code.to_string()),
+            city: names.next(),
+            town: names.next(),
+            village: names.next(),
+            municipality: names.next(),
+            county: names.next(),
+            state: names.next(),
+        };
+        let codenames = MeteoAlarmCodenames {
+            codes: codenames.into_iter().collect::<HashMap<_, _>>(),
+        };
+        let _ = match_emma_id(&address, country_code, &codenames);
+        let terms = emma_search_terms(&address);
+        let _ = has_non_latin(&terms);
+        let _ = match_area(&terms, &area_names);
+    }
+
+    /// ECCC CAP XML checked against a point, and the polygon parser on the
+    /// raw text.
+    pub fn eccc_cap(latitude: f64, longitude: f64, xml: &str) {
+        let _ = parse_eccc_cap(xml, latitude, longitude, &mut HashSet::new());
+        let _ = point_in_polygon(latitude, longitude, xml);
+    }
+
+    /// BOM `/warnings` JSON.
+    pub fn bom_alerts(data: &[u8]) {
+        if let Ok(response) = serde_json::from_slice::<BomWarningsResponse>(data) {
+            let _ = bom_alerts_from_response(response.data);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

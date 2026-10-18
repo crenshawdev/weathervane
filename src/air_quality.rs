@@ -251,6 +251,31 @@ struct AirQualityCurrentData {
     carbon_monoxide: Option<f32>,
 }
 
+/// Parser entry points for the fuzz targets in `fuzz/`.
+#[cfg(feature = "fuzzing")]
+pub(crate) mod fuzz {
+    use super::*;
+
+    /// Open-Meteo air-quality JSON, resolved for every region with and
+    /// without an aqicn value.
+    pub fn open_meteo_air_quality(data: &[u8]) {
+        let Ok(response) = serde_json::from_slice::<AirQualityResponse>(data) else {
+            return;
+        };
+        for region in [
+            Region::Us,
+            Region::Europe,
+            Region::Canada,
+            Region::Australia,
+            Region::Unknown,
+        ] {
+            for aqicn_aqi in [None, Some(i32::MIN), Some(i32::MAX)] {
+                let _ = resolve_headline_aqi(&response, region, aqicn_aqi);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

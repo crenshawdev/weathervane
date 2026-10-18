@@ -7,7 +7,11 @@ license = "MIT OR Apache-2.0"
 description = "Weather data, air quality, and alerts from public APIs. Fetches, parses, and returns clean Rust types."
 repository = "https://github.com/crenshawdev/weathervane"
 documentation = "https://docs.rs/weathervane"
-exclude = [".planning/", "CLAUDE.md", ".github/"]
+exclude = [".planning/", "CLAUDE.md", ".github/", ".sentinel/", ".claude/"]
+
+[features]
+# Exposes private parsers to the cargo-fuzz targets in fuzz/. Not public API.
+fuzzing = []
 
 [dependencies]
 async-stream = "0.3"

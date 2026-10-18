@@ -1,0 +1,45 @@
+# weathervane's copy of the sentinel cargo-deny baseline
+# (.sentinel/mechanical/deny.toml). check.sh uses this file instead of the
+# baseline. The license list holds only what the dependency tree needs.
+
+[advisories]
+# Vulnerability advisories always fail; cargo-deny no longer allows turning
+# that off. These make the other advisory kinds fail too.
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+# zbus 5's helper crates, merged into zbus 6 and no longer published on
+# their own. No zbus 5 release drops them. weathervane uses zbus only to
+# listen for two system-bus signals (src/network.rs, src/sleep.rs). Remove
+# these when the crate moves to zbus 6.
+ignore = [
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: merged into zbus 6, no fixed zbus 5 release" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: merged into zbus 6, no fixed zbus 5 release" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: merged into zbus 6, no fixed zbus 5 release" },
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    # webpki-root-certs, the Mozilla root certificates rustls-platform-verifier
+    # falls back to.
+    "CDLA-Permissive-2.0",
+]
+unused-allowed-license = "warn"
+
+[licenses.private]
+# Skip the project's own unpublished crates (publish = false).
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
