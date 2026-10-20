@@ -25,7 +25,7 @@ weathervane is a library crate, not a program. It has no binary, no `main`, no c
 | `nominatim.openstreetmap.org/reverse` | https | Europe alerts | coordinates |
 | `raw.githubusercontent.com/ktrue/Meteoalarm-warning/a357ec93fdaa10e82217304840a2673bc6e14eb2/meteoalarm-codenames.json` | https | Europe alerts | nothing |
 | `feeds.meteoalarm.org` (atom feed and v1 JSON) | https | Europe alerts | the country slug from a fixed table |
-| `dd.weather.gc.ca/today/alerts/cap/` | https | Canada alerts | today's date and a regional office code, no coordinates |
+| `dd.weather.gc.ca/today/alerts/cap/` and `dd.weather.gc.ca/{yesterday}/WXO-DD/alerts/cap/` | https | Canada alerts | today's or yesterday's date and a regional office code, no coordinates |
 | `api.weather.bom.gov.au/v1/locations/{geohash}/warnings` | https | Australia alerts | a 6-character geohash of the coordinates |
 
 - D-Bus: `network_stream` (`src/network.rs:42`) and `sleep_stream` (`src/sleep.rs:40`) connect to the system bus and subscribe to NetworkManager `StateChanged` and logind `PrepareForSleep` signals. Besides `AddMatch` and `RemoveMatch`, they call only `GetNameOwner` on the bus itself, once per signal, to check who sent it. They call no other service.
@@ -73,8 +73,8 @@ Every network response is untrusted. HTTPS protects the transport for every endp
 
 - `detect_location` (`src/location.rs:101`) asks ipwho.is over HTTPS. Validation: `success` must be true, latitude and longitude must be in range and finite. Not validated: the display strings, and the body size.
 - JSON bodies (Open-Meteo, NWS, BOM, aqicn, Nominatim, the codename table, MeteoAlarm v1 JSON) are decoded with serde into typed structs or `serde_json::Value`. serde_json's default recursion limit applies. No size limit on any body; only the 15 second timeout bounds it.
-- XML bodies: the MeteoAlarm atom feed (`src/alerts.rs:780`) and ECCC CAP files (`src/alerts.rs:1212`) go through `quick_xml::de::from_str`. [VERIFY: that quick-xml 0.42's serde deserializer does no DTD or custom entity expansion, and how deep element nesting it tolerates before overflowing the stack.]
-- ECCC directory listings are HTML scraped line by line for `href="..."`. Hour hrefs must be two ASCII digits and a slash. CAP file hrefs only need to end in `.cap` and are appended to the hour URL as a string (`src/alerts.rs:1177`), so the host stays `dd.weather.gc.ca` but the path is the listing's choice. The number of CAP files fetched per refresh has no cap.
+- XML bodies: the MeteoAlarm atom feed (`src/alerts.rs:780`) and ECCC CAP files (`src/alerts.rs:1259`) go through `quick_xml::de::from_str`. [VERIFY: that quick-xml 0.42's serde deserializer does no DTD or custom entity expansion, and how deep element nesting it tolerates before overflowing the stack.]
+- ECCC directory listings are HTML scraped line by line for `href="..."`. Hour hrefs must be two ASCII digits and a slash. CAP file hrefs only need to end in `.cap` and are appended to the hour URL as a string (`src/alerts.rs:1228`), so the host stays `dd.weather.gc.ca` but the path is the listing's choice. Two days of listings are walked, yesterday's and today's, and the number of CAP files fetched per refresh has no cap.
 - NWS: the `/points/` response names the station-list URL, and `src/weather_nws.rs:162` fetches it as given, any host, any scheme reqwest accepts. Station IDs from that list are put into a path under `api.weather.gov/stations/` without encoding (`src/weather_nws.rs:137`); the host cannot change, the path can.
 - AMeDAS: the `latest_time.txt` timestamp is checked to be 14 digits before it goes into a URL. Station coordinates are range-checked.
 - ECCC polygons are parsed from CAP text in `point_in_polygon` (`src/geo.rs:107`); unparseable vertices are dropped and fewer than three means no match.

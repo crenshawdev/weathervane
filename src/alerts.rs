@@ -2,7 +2,7 @@
 
 //! Weather alerts from regional providers (NWS, MeteoAlarm, ECCC, BOM).
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::RwLock;
 
 use chrono::{DateTime, Utc};
@@ -1081,17 +1081,31 @@ struct EcccCapAlert {
     info_blocks: Vec<EcccCapInfo>,
 }
 
-/// Info block from ECCC CAP alert (one per language).
+/// Info block from ECCC CAP alert. A file carries one per language per
+/// status: the same file can hold an `active` block for some areas and an
+/// `ended` block for others.
 #[derive(Debug, Deserialize)]
 struct EcccCapInfo {
     language: Option<String>,
     event: Option<String>,
+    #[serde(rename = "responseType")]
+    response_type: Option<String>,
     severity: Option<String>,
     expires: Option<String>,
     headline: Option<String>,
     description: Option<String>,
+    #[serde(rename = "parameter", default)]
+    parameters: Vec<EcccCapParameter>,
     #[serde(rename = "area", default)]
     areas: Vec<EcccCapArea>,
+}
+
+/// `<parameter>` from an ECCC CAP info block.
+#[derive(Debug, Deserialize)]
+struct EcccCapParameter {
+    #[serde(rename = "valueName")]
+    value_name: Option<String>,
+    value: Option<String>,
 }
 
 /// Area element from ECCC CAP alert.
@@ -1102,21 +1116,57 @@ struct EcccCapArea {
     polygon: Option<String>,
 }
 
+impl EcccCapInfo {
+    /// Value of an ECCC `layer:EC-MSC-SMC:<version>:<name>` parameter.
+    fn eccc_parameter(&self, name: &str) -> Option<&str> {
+        self.parameters.iter().find_map(|p| {
+            let value_name = p.value_name.as_deref()?;
+            let rest = value_name.strip_prefix("layer:EC-MSC-SMC:")?;
+            let (_, param) = rest.split_once(':')?;
+            (param == name).then_some(p.value.as_deref()?)
+        })
+    }
+}
+
+/// One version of one alert for one area, from an info block whose area
+/// contains the user's point. ECCC ends an alert with an `Update`, not a
+/// `Cancel`, so whether the alert is over is part of the version.
+#[derive(Debug)]
+struct EcccVersion {
+    /// Alert name and area. The name ("yellow warning - wind") rather than the
+    /// event ("wind"), so an upgrade to another alert for the same hazard is
+    /// its own group and can't be hidden behind the one it replaced.
+    key: String,
+    sent: DateTime<Utc>,
+    ended: bool,
+    entry: AlertEntry,
+}
+
 /// Fetches active weather alerts from ECCC (Environment and Climate Change Canada).
 async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<AlertReport> {
     let offices = get_eccc_office_codes(latitude, longitude);
-    let today = chrono::Utc::now().format("%Y%m%d").to_string();
+    let now = Utc::now();
+    let today = now.format("%Y%m%d").to_string();
+    // Yesterday's alerts are still current after 00:00 UTC, and they move out
+    // of `today/` to the dated tree.
+    let yesterday = (now - chrono::Duration::days(1))
+        .format("%Y%m%d")
+        .to_string();
     let client = http_client()?;
 
-    let mut all_alerts: Vec<AlertEntry> = Vec::new();
-    let mut seen_ids: HashSet<String> = HashSet::new();
-
+    let mut dir_urls: Vec<String> = Vec::new();
     for office in offices {
-        let dir_url = format!(
-            "https://dd.weather.gc.ca/today/alerts/cap/{}/{}/",
-            today, office
-        );
+        dir_urls.push(format!(
+            "https://dd.weather.gc.ca/{yesterday}/WXO-DD/alerts/cap/{yesterday}/{office}/"
+        ));
+        dir_urls.push(format!(
+            "https://dd.weather.gc.ca/today/alerts/cap/{today}/{office}/"
+        ));
+    }
 
+    let mut versions: Vec<EcccVersion> = Vec::new();
+
+    for dir_url in dir_urls {
         let dir_response = match client.get(&dir_url).send().await {
             Ok(resp) if resp.status().is_success() => resp,
             _ => continue,
@@ -1187,108 +1237,139 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<AlertReport>
                     Err(_) => continue,
                 };
 
-                if let Some(alert) = parse_eccc_cap(&cap_xml, latitude, longitude, &mut seen_ids) {
-                    all_alerts.push(alert);
-                }
+                versions.extend(parse_eccc_cap(&cap_xml, latitude, longitude));
             }
         }
     }
 
-    tracing::debug!("Fetched {} alert(s) from ECCC", all_alerts.len());
+    let alerts = latest_eccc_alerts(versions, now);
+    tracing::debug!("Fetched {} alert(s) from ECCC", alerts.len());
+
     // Every entry passed the polygon check for the caller's point.
     Ok(AlertReport {
-        alerts: all_alerts,
+        alerts,
         region_filtered: true,
     })
 }
 
-/// Parses an ECCC CAP XML document into an Alert.
-/// Filters by location using polygon containment and deduplicates by identifier.
-fn parse_eccc_cap(
-    xml: &str,
-    lat: f64,
-    lon: f64,
-    seen_ids: &mut HashSet<String>,
-) -> Option<AlertEntry> {
-    let cap: EcccCapAlert = quick_xml::de::from_str(xml).ok()?;
+/// Parses an ECCC CAP XML document into one version per English info block
+/// whose area contains the point. A file whose `sent` doesn't parse yields
+/// nothing, since it can't be placed among the other versions.
+fn parse_eccc_cap(xml: &str, lat: f64, lon: f64) -> Vec<EcccVersion> {
+    let Ok(cap) = quick_xml::de::from_str::<EcccCapAlert>(xml) else {
+        return Vec::new();
+    };
 
     if cap.status != "Actual" {
-        return None;
+        return Vec::new();
     }
 
-    if cap.msg_type == "Cancel" {
-        return None;
-    }
+    // RFC 3339 limits years to four digits, so the 24-hour fallback below
+    // can't overflow.
+    let Ok(sent) = DateTime::parse_from_rfc3339(&cap.sent).map(|dt| dt.with_timezone(&Utc)) else {
+        return Vec::new();
+    };
 
-    // Find English info block (prefer en-CA)
-    let info = cap
-        .info_blocks
-        .iter()
-        .find(|i| {
-            i.language
-                .as_ref()
-                .map(|l| l.starts_with("en"))
-                .unwrap_or(false)
-        })
-        .or_else(|| cap.info_blocks.first())?;
-
-    // Check if user's location is within any of the alert areas
-    let area_desc = info.areas.iter().find_map(|area| {
-        area.polygon
+    let is_english = |i: &&EcccCapInfo| {
+        i.language
             .as_ref()
-            .filter(|poly| point_in_polygon(lat, lon, poly))
-            .map(|_| area.area_desc.clone().unwrap_or_default())
+            .map(|l| l.starts_with("en"))
+            .unwrap_or(false)
+    };
+    let mut blocks: Vec<&EcccCapInfo> = cap.info_blocks.iter().filter(is_english).collect();
+    if blocks.is_empty() {
+        blocks.extend(cap.info_blocks.first());
+    }
+
+    blocks
+        .into_iter()
+        .filter_map(|info| {
+            let area_desc = info.areas.iter().find_map(|area| {
+                area.polygon
+                    .as_ref()
+                    .filter(|poly| point_in_polygon(lat, lon, poly))
+                    .map(|_| area.area_desc.clone().unwrap_or_default())
+            })?;
+
+            let event = info
+                .event
+                .clone()
+                .unwrap_or_else(|| "Weather Alert".to_string());
+            let name = info.eccc_parameter("Alert_Name").unwrap_or(&event);
+            let key = format!("{}|{}", name, area_desc);
+
+            // Unknown location statuses count as active: showing an alert
+            // that is over beats hiding one that isn't.
+            let ended = cap.msg_type == "Cancel"
+                || info.response_type.as_deref() == Some("AllClear")
+                || matches!(
+                    info.eccc_parameter("Alert_Location_Status"),
+                    Some("ended" | "transitioned_out")
+                );
+
+            let expires = info
+                .expires
+                .as_ref()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc))
+                .or_else(|| sent.checked_add_signed(chrono::Duration::hours(24)))?;
+
+            let headline = info.headline.clone().unwrap_or_else(|| event.clone());
+
+            Some(EcccVersion {
+                key,
+                sent,
+                ended,
+                entry: AlertEntry {
+                    alert: Alert {
+                        id: cap.identifier.clone(),
+                        event,
+                        severity: info
+                            .severity
+                            .as_deref()
+                            .map(AlertSeverity::from_cap_string)
+                            .unwrap_or(AlertSeverity::Unknown),
+                        headline,
+                        description: info.description.clone().unwrap_or_default(),
+                        expires,
+                    },
+                    area_desc,
+                },
+            })
+        })
+        .collect()
+}
+
+/// Keeps the latest version of each alert for each area, and drops the alert
+/// when that version ended it or has expired. On a tie in `sent`, a version
+/// that keeps the alert going wins, then the higher identifier.
+fn latest_eccc_alerts(versions: Vec<EcccVersion>, now: DateTime<Utc>) -> Vec<AlertEntry> {
+    let mut latest: HashMap<String, EcccVersion> = HashMap::new();
+    for version in versions {
+        match latest.get(&version.key) {
+            Some(kept)
+                if (kept.sent, !kept.ended, &kept.entry.alert.id)
+                    >= (version.sent, !version.ended, &version.entry.alert.id) => {}
+            _ => {
+                latest.insert(version.key.clone(), version);
+            }
+        }
+    }
+
+    let mut alerts: Vec<AlertEntry> = latest
+        .into_values()
+        .filter(|v| !v.ended && v.entry.alert.expires >= now)
+        .map(|v| v.entry)
+        .collect();
+    // HashMap order is random; keep the output stable between refreshes.
+    alerts.sort_by(|a, b| {
+        (&a.alert.event, &a.area_desc, &a.alert.id).cmp(&(
+            &b.alert.event,
+            &b.area_desc,
+            &b.alert.id,
+        ))
     });
-
-    let area_desc = area_desc?;
-
-    let event = info
-        .event
-        .clone()
-        .unwrap_or_else(|| "Weather Alert".to_string());
-
-    // Deduplicate by event type + area (ECCC issues updates with new identifiers)
-    let dedup_key = format!("{}|{}", event, area_desc);
-    if seen_ids.contains(&dedup_key) {
-        return None;
-    }
-    seen_ids.insert(dedup_key);
-
-    let now = Utc::now();
-
-    let sent = DateTime::parse_from_rfc3339(&cap.sent)
-        .ok()
-        .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or(now);
-
-    let expires = info
-        .expires
-        .as_ref()
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_else(|| sent + chrono::Duration::hours(24));
-
-    if expires < now {
-        return None;
-    }
-
-    let headline = info.headline.clone().unwrap_or_else(|| event.clone());
-
-    Some(AlertEntry {
-        alert: Alert {
-            id: cap.identifier,
-            event,
-            severity: info
-                .severity
-                .as_deref()
-                .map(AlertSeverity::from_cap_string)
-                .unwrap_or(AlertSeverity::Unknown),
-            headline,
-            description: info.description.clone().unwrap_or_default(),
-            expires,
-        },
-        area_desc,
-    })
+    alerts
 }
 
 // ---------------------------------------------------------------------------
@@ -1464,7 +1545,8 @@ pub(crate) mod fuzz {
     /// ECCC CAP XML checked against a point, and the polygon parser on the
     /// raw text.
     pub fn eccc_cap(latitude: f64, longitude: f64, xml: &str) {
-        let _ = parse_eccc_cap(xml, latitude, longitude, &mut HashSet::new());
+        let versions = parse_eccc_cap(xml, latitude, longitude);
+        let _ = latest_eccc_alerts(versions, Utc::now());
         let _ = point_in_polygon(latitude, longitude, xml);
     }
 
@@ -1869,165 +1951,403 @@ mod tests {
     // Fixtures reuse the exact test square from geo.rs's point_in_polygon_square
     // ("0,0 10,0 10,10 0,10") and its inside point (5.0, 5.0).
 
-    fn eccc_fixture(status: &str, msg_type: &str, sent: &str, identifier: &str) -> String {
+    // Shapes follow real ECCC files from dd.weather.gc.ca, October 2026:
+    // every info block comes in en-CA and fr-CA, the alert name and location
+    // status are `layer:EC-MSC-SMC` parameters, and an alert ends with an
+    // `Update` carrying `AllClear` and `ended`, never a `Cancel`.
+
+    const ECCC_INSIDE: &str = "0,0 10,0 10,10 0,10";
+    const ECCC_ELSEWHERE: &str = "20,20 30,20 30,30 20,30";
+
+    /// One info block in each language for one area.
+    fn eccc_info(name: &str, status: &str, expires: &str, area: &str, polygon: &str) -> String {
+        let response = if status == "ended" {
+            "AllClear"
+        } else {
+            "Monitor"
+        };
+        let event = name.rsplit(" - ").next().unwrap_or(name);
+        ["en-CA", "fr-CA"]
+            .iter()
+            .map(|lang| {
+                format!(
+                    r#"<info>
+                    <language>{lang}</language>
+                    <event>{event}</event>
+                    <responseType>{response}</responseType>
+                    <severity>Moderate</severity>
+                    <expires>{expires}</expires>
+                    <headline>{name}</headline>
+                    <description>Test.</description>
+                    <parameter>
+                        <valueName>layer:EC-MSC-SMC:1.0:Alert_Type</valueName>
+                        <value>warning</value>
+                    </parameter>
+                    <parameter>
+                        <valueName>layer:EC-MSC-SMC:1.0:Alert_Location_Status</valueName>
+                        <value>{status}</value>
+                    </parameter>
+                    <parameter>
+                        <valueName>layer:EC-MSC-SMC:1.0:Alert_Name</valueName>
+                        <value>{name}</value>
+                    </parameter>
+                    <area>
+                        <areaDesc>{area}</areaDesc>
+                        <polygon>{polygon}</polygon>
+                    </area>
+                </info>"#
+                )
+            })
+            .collect()
+    }
+
+    fn eccc_file(identifier: &str, msg_type: &str, sent: &str, infos: &[String]) -> String {
         format!(
             r#"<alert>
                 <identifier>{identifier}</identifier>
-                <status>{status}</status>
+                <status>Actual</status>
                 <msgType>{msg_type}</msgType>
                 <sent>{sent}</sent>
-                <info>
-                    <language>en-CA</language>
-                    <event>Thunderstorm Warning</event>
-                    <severity>Severe</severity>
-                    <expires>2099-01-01T00:00:00Z</expires>
-                    <headline>Severe Thunderstorm Warning</headline>
-                    <description>Severe thunderstorm expected.</description>
-                    <area>
-                        <areaDesc>Test Region</areaDesc>
-                        <polygon>0,0 10,0 10,10 0,10</polygon>
-                    </area>
-                </info>
-            </alert>"#
+                {}
+            </alert>"#,
+            infos.concat()
+        )
+    }
+
+    fn eccc_now() -> DateTime<Utc> {
+        "2026-10-13T20:00:00Z".parse().unwrap()
+    }
+
+    /// The listing's files, parsed for the inside point and reduced to what
+    /// the user sees.
+    fn eccc_alerts_at(files: &[String], now: DateTime<Utc>) -> Vec<AlertEntry> {
+        let versions = files
+            .iter()
+            .flat_map(|xml| parse_eccc_cap(xml, 5.0, 5.0))
+            .collect();
+        latest_eccc_alerts(versions, now)
+    }
+
+    fn eccc_alerts(files: &[String]) -> Vec<AlertEntry> {
+        eccc_alerts_at(files, eccc_now())
+    }
+
+    fn wind(status: &str, expires: &str) -> String {
+        eccc_info(
+            "yellow warning - wind",
+            status,
+            expires,
+            "Belleville",
+            ECCC_INSIDE,
         )
     }
 
     #[test]
     fn eccc_decodes_active_alert_in_polygon() {
-        let xml = eccc_fixture(
-            "Actual",
+        let file = eccc_file(
+            "a1",
             "Alert",
-            "2026-06-01T08:00:00-04:00",
-            "CA-ON-2026-001",
+            "2026-10-13T12:00:00-00:00",
+            &[wind("active", "2026-10-14T04:00:00-00:00")],
         );
-        let mut seen_ids = HashSet::new();
-        let alert = parse_eccc_cap(&xml, 5.0, 5.0, &mut seen_ids);
 
-        assert!(alert.is_some());
-        let alert = alert.unwrap().alert;
-        assert_eq!(alert.event, "Thunderstorm Warning");
-        assert_eq!(alert.severity, AlertSeverity::Severe);
-        assert_eq!(alert.id, "CA-ON-2026-001");
+        let alerts = eccc_alerts(&[file]);
+
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].alert.event, "wind");
+        assert_eq!(alerts[0].alert.headline, "yellow warning - wind");
+        assert_eq!(alerts[0].alert.severity, AlertSeverity::Moderate);
+        assert_eq!(alerts[0].alert.id, "a1");
+        assert_eq!(alerts[0].area_desc, "Belleville");
     }
 
     #[test]
     fn eccc_rejects_point_outside_polygon() {
-        let xml = eccc_fixture(
-            "Actual",
+        let file = eccc_file(
+            "a1",
             "Alert",
-            "2026-06-01T08:00:00-04:00",
-            "CA-ON-2026-002",
+            "2026-10-13T12:00:00-00:00",
+            &[eccc_info(
+                "yellow warning - wind",
+                "active",
+                "2026-10-14T04:00:00-00:00",
+                "Elsewhere",
+                ECCC_ELSEWHERE,
+            )],
         );
-        let mut seen_ids = HashSet::new();
-        let alert = parse_eccc_cap(&xml, 50.0, 50.0, &mut seen_ids);
 
-        assert!(alert.is_none());
+        assert!(eccc_alerts(&[file]).is_empty());
     }
 
     #[test]
     fn eccc_rejects_non_actual_status() {
-        let xml = eccc_fixture(
-            "Test",
+        let file = eccc_file(
+            "a1",
             "Alert",
-            "2026-06-01T08:00:00-04:00",
-            "CA-ON-2026-003",
-        );
-        let mut seen_ids = HashSet::new();
-        let alert = parse_eccc_cap(&xml, 5.0, 5.0, &mut seen_ids);
+            "2026-10-13T12:00:00-00:00",
+            &[wind("active", "2026-10-14T04:00:00-00:00")],
+        )
+        .replace("<status>Actual</status>", "<status>Test</status>");
 
-        assert!(alert.is_none());
+        assert!(eccc_alerts(&[file]).is_empty());
+    }
+
+    /// The Belleville alert from the CWTO feed on 2026-10-13: three versions,
+    /// and before the fix the 03Z one claimed the alert and vanished at 19:28Z
+    /// while the 12Z one ran to 04:21Z. Listed out of order on purpose; ECCC's
+    /// listings don't follow `sent` either.
+    #[test]
+    fn eccc_latest_version_wins_whatever_the_listing_order() {
+        let v12 = eccc_file(
+            "v12",
+            "Update",
+            "2026-10-13T12:21:00-00:00",
+            &[wind("active", "2026-10-14T04:21:00-00:00")],
+        );
+        let v03 = eccc_file(
+            "v03",
+            "Alert",
+            "2026-10-13T03:28:00-00:00",
+            &[wind("active", "2026-10-13T19:28:00-00:00")],
+        );
+        let v08 = eccc_file(
+            "v08",
+            "Update",
+            "2026-10-13T08:44:00-00:00",
+            &[wind("active", "2026-10-14T00:44:00-00:00")],
+        );
+
+        let alerts = eccc_alerts(&[v12, v03, v08]);
+
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].alert.id, "v12");
+        assert_eq!(
+            alerts[0].alert.expires,
+            "2026-10-14T04:21:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
     }
 
     #[test]
-    fn eccc_rejects_cancel_msgtype() {
-        let xml = eccc_fixture(
-            "Actual",
+    fn eccc_ended_update_ends_the_alert() {
+        let active = eccc_file(
+            "v1",
+            "Alert",
+            "2026-10-13T12:00:00-00:00",
+            &[wind("active", "2026-10-14T04:00:00-00:00")],
+        );
+        let ended = eccc_file(
+            "v2",
+            "Update",
+            "2026-10-13T18:00:00-00:00",
+            &[wind("ended", "2026-10-13T21:00:00-00:00")],
+        );
+
+        assert!(eccc_alerts(&[active.clone(), ended.clone()]).is_empty());
+        assert!(eccc_alerts(&[ended]).is_empty());
+    }
+
+    #[test]
+    fn eccc_cancel_ends_the_alert() {
+        let active = eccc_file(
+            "v1",
+            "Alert",
+            "2026-10-13T12:00:00-00:00",
+            &[wind("active", "2026-10-14T04:00:00-00:00")],
+        );
+        let cancel = eccc_file(
+            "v2",
             "Cancel",
-            "2026-06-01T08:00:00-04:00",
-            "CA-ON-2026-004",
+            "2026-10-13T18:00:00-00:00",
+            &[wind("active", "2026-10-14T04:00:00-00:00")],
         );
-        let mut seen_ids = HashSet::new();
-        let alert = parse_eccc_cap(&xml, 5.0, 5.0, &mut seen_ids);
 
-        assert!(alert.is_none());
+        assert!(eccc_alerts(&[active, cancel]).is_empty());
     }
 
+    /// From a CWUL frost advisory on 2026-10-17: one file, an `active` block
+    /// for some areas and a `transitioned_out` block for others.
     #[test]
-    fn eccc_dedups_same_event_and_area() {
-        let xml_first = eccc_fixture(
-            "Actual",
+    fn eccc_transitioned_out_block_ends_the_alert_for_its_areas_only() {
+        let name = "yellow advisory - frost";
+        let earlier = eccc_file(
+            "v1",
             "Alert",
-            "2026-06-01T08:00:00-04:00",
-            "CA-ON-2026-005",
+            "2026-10-13T12:00:00-00:00",
+            &[eccc_info(
+                name,
+                "active",
+                "2026-10-14T04:00:00-00:00",
+                "Soulanges area",
+                ECCC_INSIDE,
+            )],
         );
-        let xml_second = eccc_fixture(
-            "Actual",
+        let split = eccc_file(
+            "v2",
+            "Update",
+            "2026-10-13T18:00:00-00:00",
+            &[
+                eccc_info(
+                    name,
+                    "active",
+                    "2026-10-14T04:00:00-00:00",
+                    "Lévis area",
+                    ECCC_ELSEWHERE,
+                ),
+                eccc_info(
+                    name,
+                    "transitioned_out",
+                    "2026-10-14T04:00:00-00:00",
+                    "Soulanges area",
+                    ECCC_INSIDE,
+                ),
+            ],
+        );
+
+        assert!(eccc_alerts(&[earlier.clone(), split.clone()]).is_empty());
+
+        let versions = parse_eccc_cap(&split, 25.0, 25.0);
+        let elsewhere = latest_eccc_alerts(versions, eccc_now());
+        assert_eq!(elsewhere.len(), 1);
+        assert_eq!(elsewhere[0].area_desc, "Lévis area");
+    }
+
+    #[test]
+    fn eccc_active_block_after_the_first_is_read() {
+        let file = eccc_file(
+            "v1",
+            "Update",
+            "2026-10-13T18:00:00-00:00",
+            &[
+                eccc_info(
+                    "yellow warning - wind",
+                    "ended",
+                    "2026-10-13T21:00:00-00:00",
+                    "Elsewhere",
+                    ECCC_ELSEWHERE,
+                ),
+                wind("active", "2026-10-14T04:00:00-00:00"),
+            ],
+        );
+
+        let alerts = eccc_alerts(&[file]);
+
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].area_desc, "Belleville");
+    }
+
+    /// An upgrade for the same hazard and area, sent at the same second as the
+    /// old alert's `transitioned_out`. Keyed on the event, the two would share
+    /// a group and the tie could hide the new warning.
+    #[test]
+    fn eccc_upgrade_to_another_alert_name_is_kept() {
+        let out = eccc_file(
+            "v1",
+            "Update",
+            "2026-10-13T18:00:00-00:00",
+            &[wind("transitioned_out", "2026-10-14T04:00:00-00:00")],
+        );
+        let orange = eccc_file(
+            "v2",
             "Alert",
-            "2026-06-01T09:00:00-04:00",
-            "CA-ON-2026-006",
+            "2026-10-13T18:00:00-00:00",
+            &[eccc_info(
+                "orange warning - wind",
+                "active",
+                "2026-10-14T04:00:00-00:00",
+                "Belleville",
+                ECCC_INSIDE,
+            )],
         );
-        let mut seen_ids = HashSet::new();
 
-        let first = parse_eccc_cap(&xml_first, 5.0, 5.0, &mut seen_ids);
-        assert!(first.is_some());
+        let alerts = eccc_alerts(&[orange, out]);
 
-        let second = parse_eccc_cap(&xml_second, 5.0, 5.0, &mut seen_ids);
-        assert!(second.is_none());
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].alert.headline, "orange warning - wind");
     }
 
     #[test]
-    fn eccc_drops_expired_alert() {
-        let xml = r#"<alert>
-                <identifier>CA-ON-2026-007</identifier>
-                <status>Actual</status>
-                <msgType>Alert</msgType>
-                <sent>2020-06-01T08:00:00-04:00</sent>
-                <info>
-                    <language>en-CA</language>
-                    <event>Thunderstorm Warning</event>
-                    <severity>Severe</severity>
-                    <expires>2020-01-01T00:00:00Z</expires>
-                    <headline>Severe Thunderstorm Warning</headline>
-                    <description>Severe thunderstorm expected.</description>
-                    <area>
-                        <areaDesc>Test Region</areaDesc>
-                        <polygon>0,0 10,0 10,10 0,10</polygon>
-                    </area>
-                </info>
-            </alert>"#
-            .to_string();
-        let mut seen_ids = HashSet::new();
-        let alert = parse_eccc_cap(&xml, 5.0, 5.0, &mut seen_ids);
+    fn eccc_tie_in_sent_keeps_the_alert() {
+        let ended = eccc_file(
+            "v1",
+            "Update",
+            "2026-10-13T18:00:00-00:00",
+            &[wind("ended", "2026-10-13T21:00:00-00:00")],
+        );
+        let active = eccc_file(
+            "v2",
+            "Update",
+            "2026-10-13T18:00:00-00:00",
+            &[wind("active", "2026-10-14T04:00:00-00:00")],
+        );
 
-        assert!(alert.is_none());
+        assert_eq!(eccc_alerts(&[active.clone(), ended.clone()]).len(), 1);
+        assert_eq!(eccc_alerts(&[ended, active]).len(), 1);
     }
 
     #[test]
-    fn eccc_far_future_sent_without_expires_does_not_panic() {
+    fn eccc_unknown_location_status_counts_as_active() {
+        let file = eccc_file(
+            "v1",
+            "Update",
+            "2026-10-13T18:00:00-00:00",
+            &[wind("something_new", "2026-10-14T04:00:00-00:00")],
+        );
+
+        assert_eq!(eccc_alerts(&[file]).len(), 1);
+    }
+
+    /// The latest version decides: an expired update hides an older version
+    /// whose own expiry is still ahead.
+    #[test]
+    fn eccc_drops_alert_whose_latest_version_expired() {
+        let older = eccc_file(
+            "v1",
+            "Alert",
+            "2026-10-13T08:00:00-00:00",
+            &[wind("active", "2026-10-14T04:00:00-00:00")],
+        );
+        let newer = eccc_file(
+            "v2",
+            "Update",
+            "2026-10-13T12:00:00-00:00",
+            &[wind("active", "2026-10-13T19:00:00-00:00")],
+        );
+
+        assert!(eccc_alerts(&[older, newer]).is_empty());
+    }
+
+    #[test]
+    fn eccc_missing_expires_falls_back_to_a_day_after_sent() {
+        let file = eccc_file(
+            "v1",
+            "Alert",
+            "2026-10-13T12:00:00-00:00",
+            &[wind("active", "x")],
+        )
+        .replace("<expires>x</expires>", "");
+
+        let alerts = eccc_alerts(&[file]);
+
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(
+            alerts[0].alert.expires,
+            "2026-10-14T12:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
+    }
+
+    #[test]
+    fn eccc_far_future_sent_is_dropped_without_panicking() {
         // chrono's FromStr takes years up to 262142, and adding the 24-hour
-        // fallback to that overflowed and panicked.
-        let xml = r#"<alert>
-                <identifier>CA-ON-2026-008</identifier>
-                <status>Actual</status>
-                <msgType>Alert</msgType>
-                <sent>+262142-12-31T23:59:59Z</sent>
-                <info>
-                    <language>en-CA</language>
-                    <event>Thunderstorm Warning</event>
-                    <severity>Severe</severity>
-                    <headline>Severe Thunderstorm Warning</headline>
-                    <description>Severe thunderstorm expected.</description>
-                    <area>
-                        <areaDesc>Test Region</areaDesc>
-                        <polygon>0,0 10,0 10,10 0,10</polygon>
-                    </area>
-                </info>
-            </alert>"#
-            .to_string();
-        let mut seen_ids = HashSet::new();
-        let alert = parse_eccc_cap(&xml, 5.0, 5.0, &mut seen_ids);
+        // fallback to that used to overflow and panic.
+        let file = eccc_file(
+            "v1",
+            "Alert",
+            "+262142-12-31T23:59:59Z",
+            &[wind("active", "x")],
+        )
+        .replace("<expires>x</expires>", "");
 
-        assert!(alert.is_some());
+        assert!(eccc_alerts(&[file]).is_empty());
     }
 
     // -----------------------------------------------------------------
@@ -2406,20 +2726,6 @@ mod tests {
         let alerts = nws_alerts_from_response(data);
 
         assert_eq!(alerts[0].area_desc, "");
-    }
-
-    #[test]
-    fn eccc_area_desc_is_the_containing_polygon() {
-        let xml = eccc_fixture(
-            "Actual",
-            "Alert",
-            "2026-06-01T08:00:00-04:00",
-            "CA-ON-2026-008",
-        );
-        let mut seen_ids = HashSet::new();
-        let entry = parse_eccc_cap(&xml, 5.0, 5.0, &mut seen_ids).unwrap();
-
-        assert_eq!(entry.area_desc, "Test Region");
     }
 
     #[test]

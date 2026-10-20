@@ -199,8 +199,10 @@ Each `Alert` has:
 - `description: String` -- full text (empty for MeteoAlarm and BOM, which don't provide it)
 - `expires: DateTime<Utc>` -- when the alert expires
 
-Expired alerts are filtered out before returning. ECCC alerts are deduplicated
-by event type and area.
+Expired alerts are filtered out before returning. ECCC alerts are read from
+yesterday's and today's files, and for each alert and area only the latest
+version counts: if it ended the alert or has expired, the alert is not
+returned.
 
 ## Location
 
