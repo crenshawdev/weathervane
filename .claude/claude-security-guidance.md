@@ -11,12 +11,12 @@ Every network response is untrusted input. The assets are the user's location, t
 ### Things the crate must never do
 - Touch the filesystem in `src/`. Flag any new `std::fs`, temp file, cache directory or path handling.
 - Run a process (`std::process`, `Command`) or add `unsafe`.
-- Call D-Bus methods other than `AddMatch`, own a bus name, or export an interface.
+- Call D-Bus methods other than `AddMatch`, `RemoveMatch` and `GetNameOwner` on the bus itself (`org.freedesktop.DBus`), call any other service, own a bus name, or export an interface.
 - Send coordinates to a provider that doesn't need them. ECCC, MeteoAlarm, JMA and the codename table get none today; BOM gets only a 6-character geohash.
 
 ### Location and the aqicn token
 - Error payloads never carry search text or coordinates (CONTRACT.md PII rule). `Error::NoResults { query }` keeps the query out of `Display` and `WireError`; a new variant or `Display` impl must keep that. `From<reqwest::Error>` must keep mapping to payload-free variants.
-- Logs are coordinate-free. Flag any new `tracing` call that formats latitude, longitude, a Nominatim place name, a full request URL, or a station ID. Known existing sites: `src/geo.rs:331`, `src/alerts.rs:510`, `:515`, `:709`, `:712`, `:926`, `:971`, `src/weather_nws.rs:144`.
+- Logs are coordinate-free at every level, and warn and above carry no place names, EMMA_IDs or station IDs; log counts and the country instead. Flag any new `tracing` call that formats latitude, longitude or a full request URL, and any above debug that formats a Nominatim place name, an EMMA_ID or a station ID. The debug-level region-matching logs in `src/alerts.rs` and the station ID at `src/weather_nws.rs:144` are an intended exception for diagnosing region matching.
 - Any reqwest error logged or stringified must go through `.without_url()`. A bare `{}` or `{:?}` of a `reqwest::Error` whose request URL carries coordinates or the token is a leak.
 - The aqicn token goes only to `api.waqi.info`, URL-encoded, and nowhere else: not logs, errors, caches, or another host. Keep the `src/client.rs` sentinel leak tests passing and extend them when a new path handles the token.
 
@@ -28,14 +28,14 @@ Every network response is untrusted input. The assets are the user's location, t
 - XML (MeteoAlarm atom, ECCC CAP) goes through `quick_xml::de::from_str`. Flag any change that enables DTD or entity handling, or that adds manual recursion over XML events.
 - Parsers must not panic on hostile input: no indexing, slicing or `unwrap` on response-derived data without a bounds check; use `.get()`. Byte-index slicing of strings must land on char boundaries. Float parsing must tolerate NaN and infinity (`(-90.0..=90.0).contains(&x)` rejects both).
 - Alert text (`event`, `headline`, `description`, `area_desc`, `id`) is passed through unescaped and unbounded. That is the contract; the frontend escapes. Flag any change that formats it into markup, a URL or a command inside the crate.
-- D-Bus loops check member and interface but not sender. A spoofed signal must stay harmless: it may only trigger an early refresh.
+- D-Bus loops drop any signal not sent by the connection that currently owns `org.freedesktop.NetworkManager` or `org.freedesktop.login1` (`sent_by_owner_of` in `src/network.rs`). A match rule alone can't do this: the bus delivers a signal addressed straight to the connection whatever the rules say, and zbus can't match a well-known sender. Flag any new signal loop that skips the owner check.
 - In-process caches (NWS stations, AMeDAS table, Nominatim address, MeteoAlarm codenames) keep a successful response for the process lifetime. A change that caches failures, or caches data keyed by something an attacker can vary without limit, needs a reason.
 
 ### Alert correctness
 - `region_filtered: true` must mean the entries were narrowed to the caller's area. Flag any path that returns unfiltered or wrongly filtered entries with it set.
 - An alert filter with an active EMMA_ID must drop untagged entries, never pass them through.
 - Changes to region bounding boxes in `src/geo.rs` decide which provider a point uses; check the borders they name (US-Canada, Japan's west edge against Korea and Taiwan).
-- The MeteoAlarm codename table comes from a third party's GitHub `master` branch. Flag any change that makes more decisions depend on it.
+- The MeteoAlarm codename table comes from a third party's GitHub repo, pinned to a commit hash. Flag any change that points it back at a branch, and any change that makes more decisions depend on it.
 
 ### Wire contract
 - Serialized public types are frozen (`tests/wire_contract.rs`, `tests/snapshots/`). A security fix that changes a serialized shape is a breaking change and must say so.

@@ -34,6 +34,43 @@ fn decode_state_changed(msg: &zbus::Message) -> Option<u32> {
     }
 }
 
+/// True when `msg` was sent by the connection that owns `name` right now.
+///
+/// The bus delivers a signal addressed straight to this connection whatever
+/// match rules are set, and zbus can't match a well-known sender name, so any
+/// process on the system bus could otherwise fake one. Asking the bus for the
+/// owner on each signal also follows the service across restarts.
+pub(crate) async fn sent_by_owner_of(
+    connection: &zbus::Connection,
+    msg: &zbus::Message,
+    name: &'static str,
+) -> bool {
+    let header = msg.header();
+    let Some(sender) = header.sender() else {
+        return false;
+    };
+    let reply = connection
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "GetNameOwner",
+            &name,
+        )
+        .await;
+    match reply.and_then(|r| {
+        r.body()
+            .deserialize::<zbus::names::UniqueName<'_>>()
+            .map(|o| o.into_owned())
+    }) {
+        Ok(owner) => &owner == sender,
+        Err(e) => {
+            tracing::debug!("could not look up the owner of {}: {}", name, e);
+            false
+        }
+    }
+}
+
 /// Returns an async stream that yields `NetworkEvent::Connected` when the system
 /// transitions to full network connectivity via NetworkManager.
 ///
@@ -53,24 +90,16 @@ pub fn network_stream() -> Pin<Box<dyn Stream<Item = NetworkEvent> + Send>> {
                     member='StateChanged',\
                     path='/org/freedesktop/NetworkManager'";
 
-        if let Err(e) = connection
-            .call_method(
-                Some("org.freedesktop.DBus"),
-                "/org/freedesktop/DBus",
-                Some("org.freedesktop.DBus"),
-                "AddMatch",
-                &rule,
-            )
-            .await
-        {
-            tracing::warn!("Failed to subscribe to NetworkManager signals: {}", e);
-            std::future::pending::<()>().await;
-            return;
-        }
+        let mut stream = match zbus::MessageStream::for_match_rule(rule, &connection, None).await {
+            Ok(stream) => stream,
+            Err(e) => {
+                tracing::warn!("Failed to subscribe to NetworkManager signals: {}", e);
+                std::future::pending::<()>().await;
+                return;
+            }
+        };
 
         tracing::info!("Listening for NetworkManager connectivity changes");
-
-        let mut stream = zbus::MessageStream::from(&connection);
 
         use futures::StreamExt;
         while let Some(item) = stream.next().await {
@@ -80,12 +109,8 @@ pub fn network_stream() -> Pin<Box<dyn Stream<Item = NetworkEvent> + Send>> {
                     continue;
                 }
                 Ok(msg) => {
-                    let header = msg.header();
-                    if header.member().is_none_or(|m| m != "StateChanged")
-                        || header
-                            .interface()
-                            .is_none_or(|i| i != "org.freedesktop.NetworkManager")
-                    {
+                    if !sent_by_owner_of(&connection, &msg, "org.freedesktop.NetworkManager").await {
+                        tracing::debug!("Dropped a StateChanged signal not sent by org.freedesktop.NetworkManager");
                         continue;
                     }
 

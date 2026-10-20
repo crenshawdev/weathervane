@@ -2,6 +2,7 @@
 
 //! Suspend and resume detection via systemd-logind D-Bus signals.
 
+use crate::network::sent_by_owner_of;
 use futures::Stream;
 use std::pin::Pin;
 
@@ -51,24 +52,16 @@ pub fn sleep_stream() -> Pin<Box<dyn Stream<Item = SleepEvent> + Send>> {
                     member='PrepareForSleep',\
                     path='/org/freedesktop/login1'";
 
-        if let Err(e) = connection
-            .call_method(
-                Some("org.freedesktop.DBus"),
-                "/org/freedesktop/DBus",
-                Some("org.freedesktop.DBus"),
-                "AddMatch",
-                &rule,
-            )
-            .await
-        {
-            tracing::warn!("Failed to subscribe to logind PrepareForSleep signal: {}", e);
-            std::future::pending::<()>().await;
-            return;
-        }
+        let mut stream = match zbus::MessageStream::for_match_rule(rule, &connection, None).await {
+            Ok(stream) => stream,
+            Err(e) => {
+                tracing::warn!("Failed to subscribe to logind PrepareForSleep signal: {}", e);
+                std::future::pending::<()>().await;
+                return;
+            }
+        };
 
         tracing::info!("Listening for logind suspend and resume events");
-
-        let mut stream = zbus::MessageStream::from(&connection);
 
         use futures::StreamExt;
         while let Some(item) = stream.next().await {
@@ -78,12 +71,8 @@ pub fn sleep_stream() -> Pin<Box<dyn Stream<Item = SleepEvent> + Send>> {
                     continue;
                 }
                 Ok(msg) => {
-                    let header = msg.header();
-                    if header.member().is_none_or(|m| m != "PrepareForSleep")
-                        || header
-                            .interface()
-                            .is_none_or(|i| i != "org.freedesktop.login1.Manager")
-                    {
+                    if !sent_by_owner_of(&connection, &msg, "org.freedesktop.login1").await {
+                        tracing::debug!("Dropped a PrepareForSleep signal not sent by org.freedesktop.login1");
                         continue;
                     }
 

@@ -23,12 +23,12 @@ weathervane is a library crate, not a program. It has no binary, no `main`, no c
 | the station-list URL named in the `/points/` response | whatever the response says | `src/weather_nws.rs:162` | nothing added |
 | `www.jma.go.jp/bosai/amedas/...` | https | Japan temperature override | no coordinates; whole tables are fetched |
 | `nominatim.openstreetmap.org/reverse` | https | Europe alerts | coordinates |
-| `raw.githubusercontent.com/ktrue/Meteoalarm-warning/master/meteoalarm-codenames.json` | https | Europe alerts | nothing |
+| `raw.githubusercontent.com/ktrue/Meteoalarm-warning/a357ec93fdaa10e82217304840a2673bc6e14eb2/meteoalarm-codenames.json` | https | Europe alerts | nothing |
 | `feeds.meteoalarm.org` (atom feed and v1 JSON) | https | Europe alerts | the country slug from a fixed table |
 | `dd.weather.gc.ca/today/alerts/cap/` | https | Canada alerts | today's date and a regional office code, no coordinates |
 | `api.weather.bom.gov.au/v1/locations/{geohash}/warnings` | https | Australia alerts | a 6-character geohash of the coordinates |
 
-- D-Bus: `network_stream` (`src/network.rs:42`) and `sleep_stream` (`src/sleep.rs:40`) connect to the system bus and subscribe to NetworkManager `StateChanged` and logind `PrepareForSleep` signals. They call nothing else on the bus.
+- D-Bus: `network_stream` (`src/network.rs:42`) and `sleep_stream` (`src/sleep.rs:40`) connect to the system bus and subscribe to NetworkManager `StateChanged` and logind `PrepareForSleep` signals. Besides `AddMatch` and `RemoveMatch`, they call only `GetNameOwner` on the bus itself, once per signal, to check who sent it. They call no other service.
 - Nothing owned by another user, project or tool is read.
 
 ## What it writes
@@ -51,7 +51,7 @@ weathervane is a library crate, not a program. It has no binary, no `main`, no c
 - Precise location in logs or errors. CONTRACT.md's PII rule: error payloads (`kind`, `message`) never contain search query text or coordinates, enforced by tests. `Error::NoResults` holds the query but its `Display` and `WireError` drop it. The 0.9.0 log posture is coordinate-free.
 - The aqicn token anywhere but the aqicn request. It must never reach tracing output, an `Error`, a `WireError` or any other host. `get_json` and `get_text` log reqwest errors with `without_url()` for this reason, and `src/client.rs` tests assert it on connect, status, body, parse and success paths.
 - Coordinates going to a provider that does not need them. Today: ECCC, MeteoAlarm, JMA and the codename table get none, and BOM gets a geohash.
-- Anything on D-Bus beyond listening. No method calls besides `AddMatch`, no owned bus name, no exported interface. The future daemon's `dev.jcrenshaw.Weathervane` name is not in this crate.
+- Anything on D-Bus beyond listening. No method calls besides `AddMatch`, `RemoveMatch` and `GetNameOwner` on `org.freedesktop.DBus`, no calls to any other service, no owned bus name, no exported interface. The future daemon's `dev.jcrenshaw.Weathervane` name is not in this crate.
 - Actions on the user's behalf: none. It makes only the GET requests listed above, and only when the frontend calls a function.
 
 ## Who runs it and with what privileges
@@ -62,7 +62,7 @@ weathervane is a library crate, not a program. It has no binary, no `main`, no c
 
 ## What the worst outcome looks like
 
-- The worst outcome is wrong alert state shown as right: a tornado or flood warning that applies to the user is dropped while the result still says `region_filtered: true`, or a fake one is shown. This can come from a parsing or filtering bug, from the bounding boxes in `src/geo.rs` putting a point in the wrong region, or from a third-party data source. The MeteoAlarm codename table is fetched from another person's GitHub `master` branch; if it maps the user's place to the wrong EMMA_ID, stage 1 filtering returns that other region's alerts, and a quiet result looks the same as a quiet day.
+- The worst outcome is wrong alert state shown as right: a tornado or flood warning that applies to the user is dropped while the result still says `region_filtered: true`, or a fake one is shown. This can come from a parsing or filtering bug, from the bounding boxes in `src/geo.rs` putting a point in the wrong region, or from a third-party data source. The MeteoAlarm codename table is fetched from another person's GitHub repo, pinned to commit `a357ec93`, so a later push there can't change it; if it maps the user's place to the wrong EMMA_ID, stage 1 filtering returns that other region's alerts, and a quiet result looks the same as a quiet day.
 - Second: the user's location leaking to logs, to an on-path observer, or to a provider that does not need it.
 - Third: remote data crashing or hanging the frontend. A panic in a parser takes the panel applet down with it, and a huge response body is read fully into memory.
 - What the user would not notice: an alert silently filtered out, a spoofed `detect_location` result over plain HTTP (the forecast and alerts would just be for somewhere else), and location-bearing debug or warn lines in the journal.
@@ -79,7 +79,7 @@ Every network response is untrusted. HTTPS protects the transport for every endp
 - AMeDAS: the `latest_time.txt` timestamp is checked to be 14 digits before it goes into a URL. Station coordinates are range-checked.
 - ECCC polygons are parsed from CAP text in `point_in_polygon` (`src/geo.rs:107`); unparseable vertices are dropped and fewer than three means no match.
 - Alert text (`event`, `headline`, `description`, `area_desc`, `id`) is passed through unmodified and with no length limit. The crate does no escaping. The frontend must treat it as plain text; freedesktop notification bodies accept a markup subset, so passing alert text into one unescaped is markup injection from a remote feed. [VERIFY: how tempest renders alert text and notification bodies.]
-- D-Bus signals: the match rules name the sender, but the message loop checks only member and interface, not sender or path. A spoofed signal can only cause a spurious `Connected` or `Resumed` event, which makes the frontend refresh early. [VERIFY: whether the system bus policy lets another local process deliver a matching signal to this connection.]
+- D-Bus signals: the system bus delivers a signal addressed straight to a connection whatever its match rules say, so any local process can send one. Each loop asks the bus who owns `org.freedesktop.NetworkManager` or `org.freedesktop.login1` when a signal arrives and drops it unless that owner sent it. Path, interface and member are checked by the match rule.
 - Caller input: coordinates are not range-checked by the fetch functions; the city name is URL-encoded; the token is URL-encoded and blank tokens skip the request.
 - Data trusted because the crate produced it earlier: the in-memory caches. A bad response cached once (an NWS station list, the AMeDAS table, a Nominatim address, the codename table) stays for the life of the process. Failures are not cached; successes are, even if the content was wrong.
 - Redirects: reqwest's default policy follows up to 10 redirects. [VERIFY: whether it follows an https to http downgrade, which would turn any endpoint into a plain-HTTP one for that request.]
@@ -88,10 +88,7 @@ Every network response is untrusted. HTTPS protects the transport for every endp
 
 - The aqicn token. The frontend owns storage; the crate holds it only for the duration of `fetch_air_quality`. It travels in the query string of the `api.waqi.info` request, so it is visible to waqi and to anything that logs full URLs (a proxy set through `HTTPS_PROXY` sees only the host, not the query, over TLS). It is kept out of tracing by `without_url()` and out of `Error` because `From<reqwest::Error>` maps to payload-free variants. The tests in `src/client.rs` guard this.
 - Location, which is the user's most sensitive data here even though it is not a credential. Where it currently ends up in logs:
-  - `src/geo.rs:331` logs the exact coordinates at debug on a reverse-geocode cache hit.
-  - `src/alerts.rs:515`, `:926` and `:971` log the Nominatim place names (city, town, village, county, state) at warn when MeteoAlarm matching misses.
-  - `src/alerts.rs:709` and `:712` log the matched place name at debug; `:510` logs the resolved EMMA_ID at debug.
-  - `src/weather_nws.rs:144` logs the NWS station ID at debug, which places the user within a few kilometres.
-  - [VERIFY: whether these are intended exceptions to the coordinate-free log posture or gaps in it.]
+  - No log line at any level carries coordinates, and no warn-level line carries the user's place names or EMMA_ID; MeteoAlarm misses log how many place names were tried and the country. Tests in `src/alerts.rs` and `src/geo.rs` assert this for each of those warnings and the reverse-geocode cache hit.
+  - Intended exception, debug level only, for diagnosing region matching: `src/alerts.rs:511` logs the resolved EMMA_ID, `:711` and `:715` the place name that matched or was ambiguous, `:864`, `:910` and `:994` the region the alerts were filtered to, and `src/weather_nws.rs:144` the NWS station ID, which places the user within a few kilometres. Debug is off unless the frontend or the user turns it on.
 - The user's public IP goes to ipwho.is, which sees it and the location it returns.
 - The crate holds no secrets of its own. Releases publish to crates.io from `.github/workflows/release.yml` through crates.io OIDC in the `release` environment, so no long-lived registry token is stored in the repo.
