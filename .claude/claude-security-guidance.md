@@ -11,7 +11,7 @@ Every network response is untrusted input. The assets are the user's location, t
 ### Things the crate must never do
 - Touch the filesystem in `src/`. Flag any new `std::fs`, temp file, cache directory or path handling.
 - Run a process (`std::process`, `Command`) or add `unsafe`.
-- Call D-Bus methods other than `AddMatch`, own a bus name, or export an interface.
+- Call D-Bus methods other than `AddMatch`, `RemoveMatch` and `GetNameOwner` on the bus itself (`org.freedesktop.DBus`), call any other service, own a bus name, or export an interface.
 - Send coordinates to a provider that doesn't need them. ECCC, MeteoAlarm, JMA and the codename table get none today; BOM gets only a 6-character geohash.
 
 ### Location and the aqicn token
@@ -28,7 +28,7 @@ Every network response is untrusted input. The assets are the user's location, t
 - XML (MeteoAlarm atom, ECCC CAP) goes through `quick_xml::de::from_str`. Flag any change that enables DTD or entity handling, or that adds manual recursion over XML events.
 - Parsers must not panic on hostile input: no indexing, slicing or `unwrap` on response-derived data without a bounds check; use `.get()`. Byte-index slicing of strings must land on char boundaries. Float parsing must tolerate NaN and infinity (`(-90.0..=90.0).contains(&x)` rejects both).
 - Alert text (`event`, `headline`, `description`, `area_desc`, `id`) is passed through unescaped and unbounded. That is the contract; the frontend escapes. Flag any change that formats it into markup, a URL or a command inside the crate.
-- D-Bus loops check member and interface but not sender. A spoofed signal must stay harmless: it may only trigger an early refresh.
+- D-Bus loops drop any signal not sent by the connection that currently owns `org.freedesktop.NetworkManager` or `org.freedesktop.login1` (`sent_by_owner_of` in `src/network.rs`). A match rule alone can't do this: the bus delivers a signal addressed straight to the connection whatever the rules say, and zbus can't match a well-known sender. Flag any new signal loop that skips the owner check.
 - In-process caches (NWS stations, AMeDAS table, Nominatim address, MeteoAlarm codenames) keep a successful response for the process lifetime. A change that caches failures, or caches data keyed by something an attacker can vary without limit, needs a reason.
 
 ### Alert correctness

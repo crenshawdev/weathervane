@@ -28,7 +28,7 @@ weathervane is a library crate, not a program. It has no binary, no `main`, no c
 | `dd.weather.gc.ca/today/alerts/cap/` | https | Canada alerts | today's date and a regional office code, no coordinates |
 | `api.weather.bom.gov.au/v1/locations/{geohash}/warnings` | https | Australia alerts | a 6-character geohash of the coordinates |
 
-- D-Bus: `network_stream` (`src/network.rs:42`) and `sleep_stream` (`src/sleep.rs:40`) connect to the system bus and subscribe to NetworkManager `StateChanged` and logind `PrepareForSleep` signals. They call nothing else on the bus.
+- D-Bus: `network_stream` (`src/network.rs:42`) and `sleep_stream` (`src/sleep.rs:40`) connect to the system bus and subscribe to NetworkManager `StateChanged` and logind `PrepareForSleep` signals. Besides `AddMatch` and `RemoveMatch`, they call only `GetNameOwner` on the bus itself, once per signal, to check who sent it. They call no other service.
 - Nothing owned by another user, project or tool is read.
 
 ## What it writes
@@ -51,7 +51,7 @@ weathervane is a library crate, not a program. It has no binary, no `main`, no c
 - Precise location in logs or errors. CONTRACT.md's PII rule: error payloads (`kind`, `message`) never contain search query text or coordinates, enforced by tests. `Error::NoResults` holds the query but its `Display` and `WireError` drop it. The 0.9.0 log posture is coordinate-free.
 - The aqicn token anywhere but the aqicn request. It must never reach tracing output, an `Error`, a `WireError` or any other host. `get_json` and `get_text` log reqwest errors with `without_url()` for this reason, and `src/client.rs` tests assert it on connect, status, body, parse and success paths.
 - Coordinates going to a provider that does not need them. Today: ECCC, MeteoAlarm, JMA and the codename table get none, and BOM gets a geohash.
-- Anything on D-Bus beyond listening. No method calls besides `AddMatch`, no owned bus name, no exported interface. The future daemon's `dev.jcrenshaw.Weathervane` name is not in this crate.
+- Anything on D-Bus beyond listening. No method calls besides `AddMatch`, `RemoveMatch` and `GetNameOwner` on `org.freedesktop.DBus`, no calls to any other service, no owned bus name, no exported interface. The future daemon's `dev.jcrenshaw.Weathervane` name is not in this crate.
 - Actions on the user's behalf: none. It makes only the GET requests listed above, and only when the frontend calls a function.
 
 ## Who runs it and with what privileges
@@ -79,7 +79,7 @@ Every network response is untrusted. HTTPS protects the transport for every endp
 - AMeDAS: the `latest_time.txt` timestamp is checked to be 14 digits before it goes into a URL. Station coordinates are range-checked.
 - ECCC polygons are parsed from CAP text in `point_in_polygon` (`src/geo.rs:107`); unparseable vertices are dropped and fewer than three means no match.
 - Alert text (`event`, `headline`, `description`, `area_desc`, `id`) is passed through unmodified and with no length limit. The crate does no escaping. The frontend must treat it as plain text; freedesktop notification bodies accept a markup subset, so passing alert text into one unescaped is markup injection from a remote feed. [VERIFY: how tempest renders alert text and notification bodies.]
-- D-Bus signals: the match rules name the sender, but the message loop checks only member and interface, not sender or path. A spoofed signal can only cause a spurious `Connected` or `Resumed` event, which makes the frontend refresh early. [VERIFY: whether the system bus policy lets another local process deliver a matching signal to this connection.]
+- D-Bus signals: the system bus delivers a signal addressed straight to a connection whatever its match rules say, so any local process can send one. Each loop asks the bus who owns `org.freedesktop.NetworkManager` or `org.freedesktop.login1` when a signal arrives and drops it unless that owner sent it. Path, interface and member are checked by the match rule.
 - Caller input: coordinates are not range-checked by the fetch functions; the city name is URL-encoded; the token is URL-encoded and blank tokens skip the request.
 - Data trusted because the crate produced it earlier: the in-memory caches. A bad response cached once (an NWS station list, the AMeDAS table, a Nominatim address, the codename table) stays for the life of the process. Failures are not cached; successes are, even if the content was wrong.
 - Redirects: reqwest's default policy follows up to 10 redirects. [VERIFY: whether it follows an https to http downgrade, which would turn any endpoint into a plain-HTTP one for that request.]

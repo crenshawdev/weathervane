@@ -12,6 +12,11 @@
   longer panics `fetch_alerts`. ECCC `<sent>` and `<expires>` are parsed as
   RFC 3339, as the NWS and MeteoAlarm paths already are, which limits years to
   four digits, so the 24-hour expiry fallback can't overflow. (#26)
+- `network_stream` and `sleep_stream` drop signals that weren't sent by the
+  connection that owns `org.freedesktop.NetworkManager` or
+  `org.freedesktop.login1`. Before, any local process could send a
+  `StateChanged` or `PrepareForSleep` straight to the connection and trigger a
+  refresh. Each signal now costs one `GetNameOwner` call to the bus. (#30)
 
 ## 0.13.0 — 2026-09-02
 
