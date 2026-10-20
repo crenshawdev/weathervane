@@ -17,6 +17,10 @@
   `org.freedesktop.login1`. Before, any local process could send a
   `StateChanged` or `PrepareForSleep` straight to the connection and trigger a
   refresh. Each signal now costs one `GetNameOwner` call to the bus. (#30)
+- The MeteoAlarm codename table is fetched from a pinned commit of
+  `ktrue/Meteoalarm-warning` instead of its `master` branch, so a later push
+  there can't change which region a European location filters to. The file is
+  the same as `master` today. (#30)
 
 ## 0.13.0 — 2026-09-02
 

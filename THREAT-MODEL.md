@@ -23,7 +23,7 @@ weathervane is a library crate, not a program. It has no binary, no `main`, no c
 | the station-list URL named in the `/points/` response | whatever the response says | `src/weather_nws.rs:162` | nothing added |
 | `www.jma.go.jp/bosai/amedas/...` | https | Japan temperature override | no coordinates; whole tables are fetched |
 | `nominatim.openstreetmap.org/reverse` | https | Europe alerts | coordinates |
-| `raw.githubusercontent.com/ktrue/Meteoalarm-warning/master/meteoalarm-codenames.json` | https | Europe alerts | nothing |
+| `raw.githubusercontent.com/ktrue/Meteoalarm-warning/a357ec93fdaa10e82217304840a2673bc6e14eb2/meteoalarm-codenames.json` | https | Europe alerts | nothing |
 | `feeds.meteoalarm.org` (atom feed and v1 JSON) | https | Europe alerts | the country slug from a fixed table |
 | `dd.weather.gc.ca/today/alerts/cap/` | https | Canada alerts | today's date and a regional office code, no coordinates |
 | `api.weather.bom.gov.au/v1/locations/{geohash}/warnings` | https | Australia alerts | a 6-character geohash of the coordinates |
@@ -62,7 +62,7 @@ weathervane is a library crate, not a program. It has no binary, no `main`, no c
 
 ## What the worst outcome looks like
 
-- The worst outcome is wrong alert state shown as right: a tornado or flood warning that applies to the user is dropped while the result still says `region_filtered: true`, or a fake one is shown. This can come from a parsing or filtering bug, from the bounding boxes in `src/geo.rs` putting a point in the wrong region, or from a third-party data source. The MeteoAlarm codename table is fetched from another person's GitHub `master` branch; if it maps the user's place to the wrong EMMA_ID, stage 1 filtering returns that other region's alerts, and a quiet result looks the same as a quiet day.
+- The worst outcome is wrong alert state shown as right: a tornado or flood warning that applies to the user is dropped while the result still says `region_filtered: true`, or a fake one is shown. This can come from a parsing or filtering bug, from the bounding boxes in `src/geo.rs` putting a point in the wrong region, or from a third-party data source. The MeteoAlarm codename table is fetched from another person's GitHub repo, pinned to commit `a357ec93`, so a later push there can't change it; if it maps the user's place to the wrong EMMA_ID, stage 1 filtering returns that other region's alerts, and a quiet result looks the same as a quiet day.
 - Second: the user's location leaking to logs, to an on-path observer, or to a provider that does not need it.
 - Third: remote data crashing or hanging the frontend. A panic in a parser takes the panel applet down with it, and a huge response body is read fully into memory.
 - What the user would not notice: an alert silently filtered out, a spoofed `detect_location` result over plain HTTP (the forecast and alerts would just be for somewhere else), and location-bearing debug or warn lines in the journal.

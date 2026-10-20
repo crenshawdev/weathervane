@@ -35,7 +35,7 @@ Every network response is untrusted input. The assets are the user's location, t
 - `region_filtered: true` must mean the entries were narrowed to the caller's area. Flag any path that returns unfiltered or wrongly filtered entries with it set.
 - An alert filter with an active EMMA_ID must drop untagged entries, never pass them through.
 - Changes to region bounding boxes in `src/geo.rs` decide which provider a point uses; check the borders they name (US-Canada, Japan's west edge against Korea and Taiwan).
-- The MeteoAlarm codename table comes from a third party's GitHub `master` branch. Flag any change that makes more decisions depend on it.
+- The MeteoAlarm codename table comes from a third party's GitHub repo, pinned to a commit hash. Flag any change that points it back at a branch, and any change that makes more decisions depend on it.
 
 ### Wire contract
 - Serialized public types are frozen (`tests/wire_contract.rs`, `tests/snapshots/`). A security fix that changes a serialized shape is a breaking change and must say so.

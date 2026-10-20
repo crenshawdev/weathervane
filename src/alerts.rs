@@ -333,8 +333,9 @@ async fn fetch_meteoalarm_codenames() -> Option<MeteoAlarmCodenames> {
 /// Split from the matching so its three failure points get distinct messages
 /// rather than collapsing into one silent `None`.
 async fn fetch_meteoalarm_codenames_uncached() -> Option<MeteoAlarmCodenames> {
-    const CODENAMES_URL: &str =
-        "https://raw.githubusercontent.com/ktrue/Meteoalarm-warning/master/meteoalarm-codenames.json";
+    // Pinned to a commit, so a later push to the third party's repo can't
+    // change which region a European location filters to. Bump it by hand.
+    const CODENAMES_URL: &str = "https://raw.githubusercontent.com/ktrue/Meteoalarm-warning/a357ec93fdaa10e82217304840a2673bc6e14eb2/meteoalarm-codenames.json";
 
     let client = match http_client() {
         Ok(client) => client,
