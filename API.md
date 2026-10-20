@@ -210,7 +210,7 @@ by event type and area.
 pub async fn detect_location() -> Result<DetectedLocation>
 ```
 
-IP-based geolocation via ip-api.com. Returns a struct with `latitude`, `longitude`,
+IP-based geolocation via ipwho.is over HTTPS. Returns a struct with `latitude`, `longitude`,
 `display_name`, and `country`. Errors with `Error::LocationDetection` on failure.
 
 ### `search_city`

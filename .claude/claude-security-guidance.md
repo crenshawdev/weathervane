@@ -23,7 +23,7 @@ Every network response is untrusted input. The assets are the user's location, t
 ### Where untrusted data enters
 - Response data must never pick the host of a later request. Known exception: `src/weather_nws.rs:162` fetches the station-list URL from the NWS `/points/` response as given. Flag any new place that does the same, and any change there that widens it.
 - Response data put into a URL path must be validated or encoded first. Existing patterns: the AMeDAS timestamp must be 14 digits; ECCC hour hrefs must be two digits and a slash; NWS station IDs and ECCC `.cap` hrefs are appended unencoded under a fixed host prefix.
-- `detect_location` uses plain HTTP to ip-api.com. Its reply can be forged by anyone on the path; keep the range and finite checks on lat/lon, and do not trust its strings for anything but display.
+- `detect_location` asks ipwho.is over HTTPS. Keep the range and finite checks on lat/lon, do not trust its strings for anything but display, and flag any change that adds a plain-HTTP provider or fallback.
 - No response body is size-limited; only the 15 second client timeout bounds it. Flag new full-body reads on paths that loop over many requests (the ECCC CAP walk has no cap on file count).
 - XML (MeteoAlarm atom, ECCC CAP) goes through `quick_xml::de::from_str`. Flag any change that enables DTD or entity handling, or that adds manual recursion over XML events.
 - Parsers must not panic on hostile input: no indexing, slicing or `unwrap` on response-derived data without a bounds check; use `.get()`. Byte-index slicing of strings must land on char boundaries. Float parsing must tolerate NaN and infinity (`(-90.0..=90.0).contains(&x)` rejects both).

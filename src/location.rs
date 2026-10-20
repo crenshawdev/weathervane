@@ -98,19 +98,19 @@ pub async fn search_city(city_name: &str) -> Result<Vec<LocationResult>> {
 
 /// Detects user location automatically using IP-based geolocation.
 pub async fn detect_location() -> Result<DetectedLocation> {
-    let url = "http://ip-api.com/json/?fields=status,lat,lon,city,regionName,country";
+    let url = "https://ipwho.is/?fields=success,latitude,longitude,city,region,country";
 
     let response = http_client()?.get(url).send().await?.error_for_status()?;
-    let data: IpApiResponse = response.json().await?;
+    let data: IpWhoisResponse = response.json().await?;
 
-    detected_from_ip_api(data)
+    detected_from_ipwhois(data)
 }
 
-/// Lives in its own function so the IP-API success branch, coord-range guard, and
+/// Lives in its own function so the ipwho.is success branch, coord-range guard, and
 /// display_name arm selection can be unit-tested against fixtures without a live network.
-fn detected_from_ip_api(data: IpApiResponse) -> Result<DetectedLocation> {
-    if data.status == "success" {
-        if let (Some(lat), Some(lon)) = (data.lat, data.lon) {
+fn detected_from_ipwhois(data: IpWhoisResponse) -> Result<DetectedLocation> {
+    if data.success {
+        if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
             // range-contains rejects NaN and infinity by IEEE 754 ordering
             if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
                 tracing::debug!("detect_location: coordinates out of valid range");
@@ -118,7 +118,7 @@ fn detected_from_ip_api(data: IpApiResponse) -> Result<DetectedLocation> {
             }
 
             let country = data.country.clone().unwrap_or_default();
-            let display_name = match (data.city, data.region_name, data.country) {
+            let display_name = match (data.city, data.region, data.country) {
                 (Some(city), _, Some(c)) => format!("{}, {}", city, c),
                 (_, Some(region), Some(c)) => format!("{}, {}", region, c),
                 (_, _, Some(c)) => c,
@@ -159,15 +159,14 @@ struct GeocodingResult {
     admin1: Option<String>,
 }
 
-/// IP-API.com response for geolocation.
+/// ipwho.is response for geolocation.
 #[derive(Debug, Deserialize)]
-struct IpApiResponse {
-    status: String,
-    lat: Option<f64>,
-    lon: Option<f64>,
+struct IpWhoisResponse {
+    success: bool,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
     city: Option<String>,
-    #[serde(rename = "regionName")]
-    region_name: Option<String>,
+    region: Option<String>,
     country: Option<String>,
 }
 
@@ -185,11 +184,10 @@ pub(crate) mod fuzz {
         }
     }
 
-    /// ip-api.com JSON. It arrives over plain HTTP, so anyone on the path can
-    /// write it.
-    pub fn ip_api(data: &[u8]) {
-        if let Ok(response) = serde_json::from_slice::<IpApiResponse>(data) {
-            let _ = detected_from_ip_api(response);
+    /// ipwho.is JSON.
+    pub fn ipwhois(data: &[u8]) {
+        if let Ok(response) = serde_json::from_slice::<IpWhoisResponse>(data) {
+            let _ = detected_from_ipwhois(response);
         }
     }
 }
@@ -264,13 +262,13 @@ mod tests {
     }
 
     #[test]
-    fn detected_from_ip_api_success_with_city_and_country() {
-        let data: IpApiResponse = serde_json::from_str(
-            r#"{"status": "success", "lat": 45.5152, "lon": -122.6784, "city": "Portland", "regionName": "Oregon", "country": "United States"}"#,
+    fn detected_from_ipwhois_success_with_city_and_country() {
+        let data: IpWhoisResponse = serde_json::from_str(
+            r#"{"success": true, "latitude": 45.5152, "longitude": -122.6784, "city": "Portland", "region": "Oregon", "country": "United States"}"#,
         )
         .unwrap();
 
-        let loc = detected_from_ip_api(data).unwrap();
+        let loc = detected_from_ipwhois(data).unwrap();
 
         assert_eq!(loc.display_name, "Portland, United States");
         assert_eq!(loc.country, "United States");
@@ -279,74 +277,74 @@ mod tests {
     }
 
     #[test]
-    fn detected_from_ip_api_success_without_city_uses_region_and_country() {
-        let data: IpApiResponse = serde_json::from_str(
-            r#"{"status": "success", "lat": 45.5152, "lon": -122.6784, "city": null, "regionName": "Oregon", "country": "United States"}"#,
+    fn detected_from_ipwhois_success_without_city_uses_region_and_country() {
+        let data: IpWhoisResponse = serde_json::from_str(
+            r#"{"success": true, "latitude": 45.5152, "longitude": -122.6784, "city": null, "region": "Oregon", "country": "United States"}"#,
         )
         .unwrap();
 
-        let loc = detected_from_ip_api(data).unwrap();
+        let loc = detected_from_ipwhois(data).unwrap();
 
         assert_eq!(loc.display_name, "Oregon, United States");
     }
 
     #[test]
-    fn detected_from_ip_api_success_with_only_country_uses_country_alone() {
-        let data: IpApiResponse = serde_json::from_str(
-            r#"{"status": "success", "lat": 45.5152, "lon": -122.6784, "city": null, "regionName": null, "country": "United States"}"#,
+    fn detected_from_ipwhois_success_with_only_country_uses_country_alone() {
+        let data: IpWhoisResponse = serde_json::from_str(
+            r#"{"success": true, "latitude": 45.5152, "longitude": -122.6784, "city": null, "region": null, "country": "United States"}"#,
         )
         .unwrap();
 
-        let loc = detected_from_ip_api(data).unwrap();
+        let loc = detected_from_ipwhois(data).unwrap();
 
         assert_eq!(loc.display_name, "United States");
     }
 
     #[test]
-    fn detected_from_ip_api_success_with_no_names_falls_back_to_unknown() {
-        let data: IpApiResponse = serde_json::from_str(
-            r#"{"status": "success", "lat": 45.5, "lon": -122.5, "city": null, "regionName": null, "country": null}"#,
+    fn detected_from_ipwhois_success_with_no_names_falls_back_to_unknown() {
+        let data: IpWhoisResponse = serde_json::from_str(
+            r#"{"success": true, "latitude": 45.5, "longitude": -122.5, "city": null, "region": null, "country": null}"#,
         )
         .unwrap();
 
-        let loc = detected_from_ip_api(data).unwrap();
+        let loc = detected_from_ipwhois(data).unwrap();
 
         assert_eq!(loc.display_name, "Unknown");
         assert_eq!(loc.country, "");
     }
 
     #[test]
-    fn detected_from_ip_api_returns_location_detection_error_when_status_fail() {
-        let data: IpApiResponse = serde_json::from_str(
-            r#"{"status": "fail", "lat": 45.5, "lon": -122.5, "city": null, "regionName": null, "country": null}"#,
+    fn detected_from_ipwhois_returns_location_detection_error_when_not_success() {
+        let data: IpWhoisResponse = serde_json::from_str(
+            r#"{"success": false, "latitude": 45.5, "longitude": -122.5, "city": null, "region": null, "country": null}"#,
         )
         .unwrap();
 
-        let result = detected_from_ip_api(data);
+        let result = detected_from_ipwhois(data);
 
         assert!(matches!(result, Err(Error::LocationDetection)));
     }
 
     #[test]
-    fn detected_from_ip_api_returns_location_detection_error_when_lat_missing() {
-        let data: IpApiResponse = serde_json::from_str(
-            r#"{"status": "success", "lat": null, "lon": -122.5, "city": null, "regionName": null, "country": null}"#,
+    fn detected_from_ipwhois_returns_location_detection_error_when_lat_missing() {
+        let data: IpWhoisResponse = serde_json::from_str(
+            r#"{"success": true, "latitude": null, "longitude": -122.5, "city": null, "region": null, "country": null}"#,
         )
         .unwrap();
 
-        let result = detected_from_ip_api(data);
+        let result = detected_from_ipwhois(data);
 
         assert!(matches!(result, Err(Error::LocationDetection)));
     }
 
     #[test]
-    fn detected_from_ip_api_returns_location_detection_error_when_lat_out_of_range() {
-        let data: IpApiResponse = serde_json::from_str(
-            r#"{"status": "success", "lat": 91.0, "lon": 0.0, "city": null, "regionName": null, "country": null}"#,
+    fn detected_from_ipwhois_returns_location_detection_error_when_lat_out_of_range() {
+        let data: IpWhoisResponse = serde_json::from_str(
+            r#"{"success": true, "latitude": 91.0, "longitude": 0.0, "city": null, "region": null, "country": null}"#,
         )
         .unwrap();
 
-        let result = detected_from_ip_api(data);
+        let result = detected_from_ipwhois(data);
 
         assert!(matches!(result, Err(Error::LocationDetection)));
     }
