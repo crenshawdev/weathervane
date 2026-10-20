@@ -26,6 +26,17 @@
   MeteoAlarm warnings for an EMMA_ID miss, an unfiltered feed and a
   local-name miss log how many place names were tried instead of the names,
   and no longer log the user's EMMA_ID. (#30)
+- ECCC alerts show their latest version. Files were read oldest first and the
+  first version claimed the alert, so a later update's text, severity and
+  expiry were ignored and the alert vanished at the first version's expiry.
+  (#26)
+- ECCC alerts that have ended are no longer shown. ECCC ends an alert with an
+  update marked `ended` or `transitioned_out`, not a `Cancel`, and those
+  updates were shown as active alerts until they expired. (#26)
+- Every English info block in an ECCC file is read, not only the first, so a
+  user in an area listed in a later block gets that alert. (#26)
+- Yesterday's ECCC alerts no longer disappear at 00:00 UTC. They're read from
+  the dated archive alongside today's. (#26)
 
 ## 0.13.0 — 2026-09-02
 
