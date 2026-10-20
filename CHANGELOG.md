@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.1 — 2026-10-20
 
 ### Fixed
 - `detect_location` asks ipwho.is over HTTPS instead of ip-api.com over plain
