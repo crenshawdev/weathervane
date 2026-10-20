@@ -1138,8 +1138,8 @@ struct EcccVersion {
     /// its own group and can't be hidden behind the one it replaced.
     key: String,
     /// When the version was sent, for ordering. A `sent` that doesn't parse,
-    /// or is more than an hour ahead of the fetch, is `DateTime::MIN_UTC`: it
-    /// can't override a real update, but still shows when it's the only one.
+    /// or is more than an hour past the server's time, is `DateTime::MIN_UTC`:
+    /// it can't override a real update, but still shows when it's the only one.
     sent: DateTime<Utc>,
     ended: bool,
     entry: AlertEntry,
@@ -1235,12 +1235,25 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<AlertReport>
                     _ => continue,
                 };
 
+                // The server's clock, not the user's, is the one ECCC's `sent`
+                // comes from, so a slow local clock can't make a real update
+                // look like it's from the future.
+                let server_now = cap_response
+                    .headers()
+                    .get(reqwest::header::DATE)
+                    .and_then(|d| d.to_str().ok())
+                    .and_then(|d| DateTime::parse_from_rfc2822(d).ok())
+                    .map(|d| d.with_timezone(&Utc));
+                let sent_limit = server_now.unwrap_or(now) + ECCC_SENT_SKEW;
+
                 let cap_xml = match cap_response.text().await {
                     Ok(text) => text,
                     Err(_) => continue,
                 };
 
-                versions.extend(parse_eccc_cap(&cap_xml, latitude, longitude, now));
+                versions.extend(parse_eccc_cap(
+                    &cap_xml, latitude, longitude, now, sent_limit,
+                ));
             }
         }
     }
@@ -1255,13 +1268,20 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<AlertReport>
     })
 }
 
-/// How far ahead of the fetch a `sent` may be before it isn't trusted for
-/// ordering. Covers ECCC's clock running a little ahead of the user's.
+/// How far past the server's time a `sent` may be before it isn't trusted
+/// for ordering.
 const ECCC_SENT_SKEW: chrono::Duration = chrono::Duration::hours(1);
 
 /// Parses an ECCC CAP XML document into one version per English info block
-/// whose area contains the point.
-fn parse_eccc_cap(xml: &str, lat: f64, lon: f64, now: DateTime<Utc>) -> Vec<EcccVersion> {
+/// whose area contains the point. A `sent` later than `sent_limit` ranks
+/// oldest; `now` is the local clock, for the 24-hour expiry fallback.
+fn parse_eccc_cap(
+    xml: &str,
+    lat: f64,
+    lon: f64,
+    now: DateTime<Utc>,
+    sent_limit: DateTime<Utc>,
+) -> Vec<EcccVersion> {
     let Ok(cap) = quick_xml::de::from_str::<EcccCapAlert>(xml) else {
         return Vec::new();
     };
@@ -1275,7 +1295,7 @@ fn parse_eccc_cap(xml: &str, lat: f64, lon: f64, now: DateTime<Utc>) -> Vec<Eccc
     let sent = DateTime::parse_from_rfc3339(&cap.sent)
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
-        .filter(|sent| *sent <= now + ECCC_SENT_SKEW);
+        .filter(|sent| *sent <= sent_limit);
 
     let is_english = |i: &&EcccCapInfo| {
         i.language
@@ -1556,7 +1576,7 @@ pub(crate) mod fuzz {
     /// raw text.
     pub fn eccc_cap(latitude: f64, longitude: f64, xml: &str) {
         let now = Utc::now();
-        let versions = parse_eccc_cap(xml, latitude, longitude, now);
+        let versions = parse_eccc_cap(xml, latitude, longitude, now, now + ECCC_SENT_SKEW);
         let _ = latest_eccc_alerts(versions, now);
         let _ = point_in_polygon(latitude, longitude, xml);
     }
@@ -2032,9 +2052,18 @@ mod tests {
     /// The listing's files, parsed for the inside point and reduced to what
     /// the user sees.
     fn eccc_alerts_at(files: &[String], now: DateTime<Utc>) -> Vec<AlertEntry> {
+        eccc_alerts_with_server_time(files, now, now)
+    }
+
+    /// `now` is the user's clock; `server_now` is the `Date` the files came with.
+    fn eccc_alerts_with_server_time(
+        files: &[String],
+        now: DateTime<Utc>,
+        server_now: DateTime<Utc>,
+    ) -> Vec<AlertEntry> {
         let versions = files
             .iter()
-            .flat_map(|xml| parse_eccc_cap(xml, 5.0, 5.0, now))
+            .flat_map(|xml| parse_eccc_cap(xml, 5.0, 5.0, now, server_now + ECCC_SENT_SKEW))
             .collect();
         latest_eccc_alerts(versions, now)
     }
@@ -2216,7 +2245,7 @@ mod tests {
 
         assert!(eccc_alerts(&[earlier.clone(), split.clone()]).is_empty());
 
-        let versions = parse_eccc_cap(&split, 25.0, 25.0, eccc_now());
+        let versions = parse_eccc_cap(&split, 25.0, 25.0, eccc_now(), eccc_now() + ECCC_SENT_SKEW);
         let elsewhere = latest_eccc_alerts(versions, eccc_now());
         assert_eq!(elsewhere.len(), 1);
         assert_eq!(elsewhere[0].area_desc, "Lévis area");
@@ -2399,6 +2428,32 @@ mod tests {
         );
 
         let alerts = eccc_alerts(&[slipped, real]);
+
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].alert.id, "v2");
+    }
+
+    /// The second review's case: the user's clock is two hours slow, and the
+    /// newest update is newer than that clock plus the allowance. Measured
+    /// against the server's time it is still the latest.
+    #[test]
+    fn eccc_slow_local_clock_still_takes_the_newest_update() {
+        let older = eccc_file(
+            "v1",
+            "Alert",
+            "2026-10-13T12:00:00-00:00",
+            &[wind("active", "2026-10-13T19:30:00-00:00")],
+        );
+        let newest = eccc_file(
+            "v2",
+            "Update",
+            "2026-10-13T21:30:00-00:00",
+            &[wind("active", "2026-10-14T04:00:00-00:00")],
+        );
+        let local = eccc_now();
+        let server = local + chrono::Duration::hours(2);
+
+        let alerts = eccc_alerts_with_server_time(&[older, newest], local, server);
 
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].alert.id, "v2");
