@@ -1137,6 +1137,9 @@ struct EcccVersion {
     /// event ("wind"), so an upgrade to another alert for the same hazard is
     /// its own group and can't be hidden behind the one it replaced.
     key: String,
+    /// When the version was sent, for ordering. A `sent` that doesn't parse,
+    /// or is more than an hour ahead of the fetch, is `DateTime::MIN_UTC`: it
+    /// can't override a real update, but still shows when it's the only one.
     sent: DateTime<Utc>,
     ended: bool,
     entry: AlertEntry,
@@ -1237,7 +1240,7 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<AlertReport>
                     Err(_) => continue,
                 };
 
-                versions.extend(parse_eccc_cap(&cap_xml, latitude, longitude));
+                versions.extend(parse_eccc_cap(&cap_xml, latitude, longitude, now));
             }
         }
     }
@@ -1252,10 +1255,13 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<AlertReport>
     })
 }
 
+/// How far ahead of the fetch a `sent` may be before it isn't trusted for
+/// ordering. Covers ECCC's clock running a little ahead of the user's.
+const ECCC_SENT_SKEW: chrono::Duration = chrono::Duration::hours(1);
+
 /// Parses an ECCC CAP XML document into one version per English info block
-/// whose area contains the point. A file whose `sent` doesn't parse yields
-/// nothing, since it can't be placed among the other versions.
-fn parse_eccc_cap(xml: &str, lat: f64, lon: f64) -> Vec<EcccVersion> {
+/// whose area contains the point.
+fn parse_eccc_cap(xml: &str, lat: f64, lon: f64, now: DateTime<Utc>) -> Vec<EcccVersion> {
     let Ok(cap) = quick_xml::de::from_str::<EcccCapAlert>(xml) else {
         return Vec::new();
     };
@@ -1266,9 +1272,10 @@ fn parse_eccc_cap(xml: &str, lat: f64, lon: f64) -> Vec<EcccVersion> {
 
     // RFC 3339 limits years to four digits, so the 24-hour fallback below
     // can't overflow.
-    let Ok(sent) = DateTime::parse_from_rfc3339(&cap.sent).map(|dt| dt.with_timezone(&Utc)) else {
-        return Vec::new();
-    };
+    let sent = DateTime::parse_from_rfc3339(&cap.sent)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+        .filter(|sent| *sent <= now + ECCC_SENT_SKEW);
 
     let is_english = |i: &&EcccCapInfo| {
         i.language
@@ -1312,13 +1319,16 @@ fn parse_eccc_cap(xml: &str, lat: f64, lon: f64) -> Vec<EcccVersion> {
                 .as_ref()
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt.with_timezone(&Utc))
-                .or_else(|| sent.checked_add_signed(chrono::Duration::hours(24)))?;
+                .or_else(|| {
+                    sent.unwrap_or(now)
+                        .checked_add_signed(chrono::Duration::hours(24))
+                })?;
 
             let headline = info.headline.clone().unwrap_or_else(|| event.clone());
 
             Some(EcccVersion {
                 key,
-                sent,
+                sent: sent.unwrap_or(DateTime::<Utc>::MIN_UTC),
                 ended,
                 entry: AlertEntry {
                     alert: Alert {
@@ -1545,8 +1555,9 @@ pub(crate) mod fuzz {
     /// ECCC CAP XML checked against a point, and the polygon parser on the
     /// raw text.
     pub fn eccc_cap(latitude: f64, longitude: f64, xml: &str) {
-        let versions = parse_eccc_cap(xml, latitude, longitude);
-        let _ = latest_eccc_alerts(versions, Utc::now());
+        let now = Utc::now();
+        let versions = parse_eccc_cap(xml, latitude, longitude, now);
+        let _ = latest_eccc_alerts(versions, now);
         let _ = point_in_polygon(latitude, longitude, xml);
     }
 
@@ -2023,7 +2034,7 @@ mod tests {
     fn eccc_alerts_at(files: &[String], now: DateTime<Utc>) -> Vec<AlertEntry> {
         let versions = files
             .iter()
-            .flat_map(|xml| parse_eccc_cap(xml, 5.0, 5.0))
+            .flat_map(|xml| parse_eccc_cap(xml, 5.0, 5.0, now))
             .collect();
         latest_eccc_alerts(versions, now)
     }
@@ -2205,7 +2216,7 @@ mod tests {
 
         assert!(eccc_alerts(&[earlier.clone(), split.clone()]).is_empty());
 
-        let versions = parse_eccc_cap(&split, 25.0, 25.0);
+        let versions = parse_eccc_cap(&split, 25.0, 25.0, eccc_now());
         let elsewhere = latest_eccc_alerts(versions, eccc_now());
         assert_eq!(elsewhere.len(), 1);
         assert_eq!(elsewhere[0].area_desc, "Lévis area");
@@ -2336,9 +2347,10 @@ mod tests {
     }
 
     #[test]
-    fn eccc_far_future_sent_is_dropped_without_panicking() {
+    fn eccc_far_future_sent_without_expires_does_not_panic() {
         // chrono's FromStr takes years up to 262142, and adding the 24-hour
-        // fallback to that used to overflow and panic.
+        // fallback to that used to overflow and panic. RFC 3339 rejects it, so
+        // the version ranks oldest and its expiry falls back to a day from now.
         let file = eccc_file(
             "v1",
             "Alert",
@@ -2347,7 +2359,76 @@ mod tests {
         )
         .replace("<expires>x</expires>", "");
 
-        assert!(eccc_alerts(&[file]).is_empty());
+        let alerts = eccc_alerts(&[file]);
+
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(
+            alerts[0].alert.expires,
+            eccc_now() + chrono::Duration::hours(24)
+        );
+    }
+
+    /// A small format slip in `sent` must not hide a warning that is only in
+    /// that file.
+    #[test]
+    fn eccc_unparseable_sent_still_shows_when_alone() {
+        let file = eccc_file(
+            "v1",
+            "Alert",
+            "2026-10-13T12:21:00",
+            &[wind("active", "2026-10-14T04:21:00-00:00")],
+        );
+
+        assert_eq!(eccc_alerts(&[file]).len(), 1);
+    }
+
+    /// ...and must not override a real update either.
+    #[test]
+    fn eccc_unparseable_sent_ranks_below_a_real_update() {
+        let slipped = eccc_file(
+            "v1",
+            "Update",
+            "2026-10-13T18:00:00",
+            &[wind("ended", "2026-10-13T21:00:00-00:00")],
+        );
+        let real = eccc_file(
+            "v2",
+            "Update",
+            "2026-10-13T12:00:00-00:00",
+            &[wind("active", "2026-10-14T04:00:00-00:00")],
+        );
+
+        let alerts = eccc_alerts(&[slipped, real]);
+
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].alert.id, "v2");
+    }
+
+    /// A version sent more than an hour after the fetch can't end a real
+    /// alert; one a few minutes ahead, as clock skew would give, still counts.
+    #[test]
+    fn eccc_future_sent_cannot_override_a_real_update() {
+        let real = eccc_file(
+            "v1",
+            "Update",
+            "2026-10-13T12:00:00-00:00",
+            &[wind("active", "2026-10-14T04:00:00-00:00")],
+        );
+        let far_ahead = eccc_file(
+            "v2",
+            "Update",
+            "9999-12-31T23:59:59-00:00",
+            &[wind("ended", "2026-10-13T21:00:00-00:00")],
+        );
+        let skewed = eccc_file(
+            "v3",
+            "Update",
+            "2026-10-13T20:10:00-00:00",
+            &[wind("ended", "2026-10-13T21:00:00-00:00")],
+        );
+
+        assert_eq!(eccc_alerts(&[real.clone(), far_ahead]).len(), 1);
+        assert!(eccc_alerts(&[real, skewed]).is_empty());
     }
 
     // -----------------------------------------------------------------
