@@ -8,6 +8,10 @@
   the old reply and pick the user's detected location. There is no fallback to
   a plain-HTTP provider. `DetectedLocation` and the function's signature are
   unchanged. (#29)
+- An ECCC CAP file with a far-future `<sent>` date and no `<expires>` no
+  longer panics `fetch_alerts`. ECCC `<sent>` and `<expires>` are parsed as
+  RFC 3339, as the NWS and MeteoAlarm paths already are, which limits years to
+  four digits, so the 24-hour expiry fallback can't overflow. (#26)
 
 ## 0.13.0 — 2026-09-02
 
