@@ -1255,9 +1255,7 @@ fn parse_eccc_cap(
 
     let now = Utc::now();
 
-    let sent = cap
-        .sent
-        .parse::<DateTime<chrono::FixedOffset>>()
+    let sent = DateTime::parse_from_rfc3339(&cap.sent)
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or(now);
@@ -1265,7 +1263,7 @@ fn parse_eccc_cap(
     let expires = info
         .expires
         .as_ref()
-        .and_then(|s| s.parse::<DateTime<chrono::FixedOffset>>().ok())
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_else(|| sent + chrono::Duration::hours(24));
 
@@ -2001,6 +1999,34 @@ mod tests {
         let alert = parse_eccc_cap(&xml, 5.0, 5.0, &mut seen_ids);
 
         assert!(alert.is_none());
+    }
+
+    #[test]
+    fn eccc_far_future_sent_without_expires_does_not_panic() {
+        // chrono's FromStr takes years up to 262142, and adding the 24-hour
+        // fallback to that overflowed and panicked.
+        let xml = r#"<alert>
+                <identifier>CA-ON-2026-008</identifier>
+                <status>Actual</status>
+                <msgType>Alert</msgType>
+                <sent>+262142-12-31T23:59:59Z</sent>
+                <info>
+                    <language>en-CA</language>
+                    <event>Thunderstorm Warning</event>
+                    <severity>Severe</severity>
+                    <headline>Severe Thunderstorm Warning</headline>
+                    <description>Severe thunderstorm expected.</description>
+                    <area>
+                        <areaDesc>Test Region</areaDesc>
+                        <polygon>0,0 10,0 10,10 0,10</polygon>
+                    </area>
+                </info>
+            </alert>"#
+            .to_string();
+        let mut seen_ids = HashSet::new();
+        let alert = parse_eccc_cap(&xml, 5.0, 5.0, &mut seen_ids);
+
+        assert!(alert.is_some());
     }
 
     // -----------------------------------------------------------------
