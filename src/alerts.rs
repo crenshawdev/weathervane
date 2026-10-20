@@ -1235,16 +1235,11 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<AlertReport>
                     _ => continue,
                 };
 
-                // The server's clock, not the user's, is the one ECCC's `sent`
-                // comes from, so a slow local clock can't make a real update
-                // look like it's from the future.
-                let server_now = cap_response
+                let date = cap_response
                     .headers()
                     .get(reqwest::header::DATE)
-                    .and_then(|d| d.to_str().ok())
-                    .and_then(|d| DateTime::parse_from_rfc2822(d).ok())
-                    .map(|d| d.with_timezone(&Utc));
-                let sent_limit = server_now.unwrap_or(now) + ECCC_SENT_SKEW;
+                    .and_then(|d| d.to_str().ok());
+                let sent_limit = eccc_sent_limit(date, now);
 
                 let cap_xml = match cap_response.text().await {
                     Ok(text) => text,
@@ -1271,6 +1266,26 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<AlertReport>
 /// How far past the server's time a `sent` may be before it isn't trusted
 /// for ordering.
 const ECCC_SENT_SKEW: chrono::Duration = chrono::Duration::hours(1);
+
+/// How far the server's `Date` may be from the local clock before it's
+/// ignored. A dual-boot clock read as UTC is off by a few hours, well inside.
+const ECCC_DATE_TRUST: chrono::Duration = chrono::Duration::hours(24);
+
+/// The latest `sent` trusted for ordering: the server's `Date` plus the
+/// allowance. The server's clock is the one ECCC's `sent` comes from, so a
+/// slow local clock can't make a real update look like it's from the future.
+/// A missing, unparseable or implausible `Date` falls back to the local clock.
+fn eccc_sent_limit(date_header: Option<&str>, now: DateTime<Utc>) -> DateTime<Utc> {
+    let server_now = date_header
+        .and_then(|d| DateTime::parse_from_rfc2822(d).ok())
+        .map(|d| d.with_timezone(&Utc))
+        .filter(|d| (*d - now).abs() <= ECCC_DATE_TRUST)
+        .unwrap_or(now);
+    // chrono's `+` panics on overflow; `now` is never near the limit.
+    server_now
+        .checked_add_signed(ECCC_SENT_SKEW)
+        .unwrap_or(now + ECCC_SENT_SKEW)
+}
 
 /// Parses an ECCC CAP XML document into one version per English info block
 /// whose area contains the point. A `sent` later than `sent_limit` ranks
@@ -2457,6 +2472,43 @@ mod tests {
 
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].alert.id, "v2");
+    }
+
+    #[test]
+    fn eccc_sent_limit_uses_a_plausible_server_date() {
+        let now = eccc_now();
+        let limit = eccc_sent_limit(Some("Tue, 13 Oct 2026 22:00:00 GMT"), now);
+
+        assert_eq!(
+            limit,
+            "2026-10-13T23:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
+    }
+
+    #[test]
+    fn eccc_sent_limit_falls_back_to_the_local_clock() {
+        let now = eccc_now();
+        let local = now + ECCC_SENT_SKEW;
+
+        assert_eq!(eccc_sent_limit(None, now), local);
+        assert_eq!(eccc_sent_limit(Some("not a date"), now), local);
+        // A week ahead would switch off the future-`sent` check.
+        assert_eq!(
+            eccc_sent_limit(Some("Tue, 20 Oct 2026 20:00:00 GMT"), now),
+            local
+        );
+    }
+
+    /// The third review's case: chrono's RFC 2822 parser takes years up to
+    /// 262142, and adding the allowance to that used to overflow and panic.
+    #[test]
+    fn eccc_sent_limit_does_not_panic_on_a_far_future_date() {
+        let now = eccc_now();
+
+        assert_eq!(
+            eccc_sent_limit(Some("31 Dec 262142 23:30:00 +0000"), now),
+            now + ECCC_SENT_SKEW
+        );
     }
 
     /// A version sent more than an hour after the fetch can't end a real
