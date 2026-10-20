@@ -17,7 +17,7 @@ weathervane is a library crate, not a program. It has no binary, no `main`, no c
 | `api.open-meteo.com/v1/forecast` | https | `fetch_weather` | coordinates, units |
 | `air-quality-api.open-meteo.com/v1/air-quality` | https | `fetch_air_quality`, `fetch_pollen` | coordinates |
 | `geocoding-api.open-meteo.com/v1/search` | https | `search_city` | the city name, URL-encoded |
-| `ip-api.com/json/` | plain http | `detect_location` | nothing but the caller's public IP |
+| `ipwho.is/` | https | `detect_location` | nothing but the caller's public IP |
 | `api.waqi.info/feed/geo:` | https | `fetch_air_quality` with a token, outside Europe | coordinates and the aqicn token in the query string |
 | `api.weather.gov/points/`, `/stations/.../observations/latest`, `/alerts/active` | https | US weather override, US alerts | coordinates (points rounded to 4 decimals) |
 | the station-list URL named in the `/points/` response | whatever the response says | `src/weather_nws.rs:162` | nothing added |
@@ -69,9 +69,9 @@ weathervane is a library crate, not a program. It has no binary, no `main`, no c
 
 ## Trust boundaries (where untrusted data enters)
 
-Every network response is untrusted. HTTPS protects the transport for all endpoints but one; it says nothing about whether the provider's data is well formed.
+Every network response is untrusted. HTTPS protects the transport for every endpoint the crate names itself; it says nothing about whether the provider's data is well formed.
 
-- `detect_location` over plain HTTP (`src/location.rs:101`). Anyone on the path (hotel or café Wi-Fi) can read the reply and forge it. Validation: status must be `success`, latitude and longitude must be in range and finite. Not validated: the display strings, and the body size. [VERIFY: whether ip-api offers HTTPS on the free tier.]
+- `detect_location` (`src/location.rs:101`) asks ipwho.is over HTTPS. Validation: `success` must be true, latitude and longitude must be in range and finite. Not validated: the display strings, and the body size.
 - JSON bodies (Open-Meteo, NWS, BOM, aqicn, Nominatim, the codename table, MeteoAlarm v1 JSON) are decoded with serde into typed structs or `serde_json::Value`. serde_json's default recursion limit applies. No size limit on any body; only the 15 second timeout bounds it.
 - XML bodies: the MeteoAlarm atom feed (`src/alerts.rs:780`) and ECCC CAP files (`src/alerts.rs:1212`) go through `quick_xml::de::from_str`. [VERIFY: that quick-xml 0.42's serde deserializer does no DTD or custom entity expansion, and how deep element nesting it tolerates before overflowing the stack.]
 - ECCC directory listings are HTML scraped line by line for `href="..."`. Hour hrefs must be two ASCII digits and a slash. CAP file hrefs only need to end in `.cap` and are appended to the hour URL as a string (`src/alerts.rs:1177`), so the host stays `dd.weather.gc.ca` but the path is the listing's choice. The number of CAP files fetched per refresh has no cap.
@@ -93,5 +93,5 @@ Every network response is untrusted. HTTPS protects the transport for all endpoi
   - `src/alerts.rs:709` and `:712` log the matched place name at debug; `:510` logs the resolved EMMA_ID at debug.
   - `src/weather_nws.rs:144` logs the NWS station ID at debug, which places the user within a few kilometres.
   - [VERIFY: whether these are intended exceptions to the coordinate-free log posture or gaps in it.]
-- The user's public IP goes to ip-api.com in clear text, and the location it returns is visible to anyone on the path.
+- The user's public IP goes to ipwho.is, which sees it and the location it returns.
 - The crate holds no secrets of its own. Releases publish to crates.io from `.github/workflows/release.yml` through crates.io OIDC in the `release` environment, so no long-lived registry token is stored in the repo.

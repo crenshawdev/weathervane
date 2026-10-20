@@ -4,5 +4,5 @@ use libfuzzer_sys::fuzz_target;
 use weathervane::fuzz_api;
 
 fuzz_target!(|data: &[u8]| {
-    fuzz_api::ip_api(data);
+    fuzz_api::ipwhois(data);
 });

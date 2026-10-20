@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- `detect_location` asks ipwho.is over HTTPS instead of ip-api.com over plain
+  HTTP, whose free tier has no HTTPS. Anyone on the network path could rewrite
+  the old reply and pick the user's detected location. There is no fallback to
+  a plain-HTTP provider. `DetectedLocation` and the function's signature are
+  unchanged. (#29)
+
 ## 0.13.0 — 2026-09-02
 
 ### Changed
