@@ -21,6 +21,11 @@
   `ktrue/Meteoalarm-warning` instead of its `master` branch, so a later push
   there can't change which region a European location filters to. The file is
   the same as `master` today. (#30)
+- Logs no longer carry the user's location outside debug-level region
+  matching. The reverse-geocode cache hit no longer logs coordinates, and the
+  MeteoAlarm warnings for an EMMA_ID miss, an unfiltered feed and a
+  local-name miss log how many place names were tried instead of the names,
+  and no longer log the user's EMMA_ID. (#30)
 
 ## 0.13.0 — 2026-09-02
 

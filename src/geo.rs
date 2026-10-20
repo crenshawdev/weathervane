@@ -328,7 +328,7 @@ static REVERSE_GEOCODE_CACHE: RwLock<Option<HashMap<String, NominatimAddress>>> 
 pub(crate) async fn reverse_geocode(latitude: f64, longitude: f64) -> Result<NominatimAddress> {
     let key = cache_key(latitude, longitude);
     if let Some(address) = cached_address(&key) {
-        tracing::debug!("Reverse geocode cache hit for {}", key);
+        tracing::debug!("Reverse geocode cache hit");
         return Ok(address);
     }
 
@@ -718,5 +718,18 @@ mod tests {
             cached_address(key).unwrap().country_code.as_deref(),
             Some("cz")
         );
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn reverse_geocode_cache_hit_logs_no_coordinates() {
+        let (lat, lon) = (47.123456, 8.654321);
+        let body = r#"{"address":{"country":"Schweiz","country_code":"ch","city":"Zug"}}"#;
+        cache_address(&cache_key(lat, lon), &address_from_json(body).unwrap());
+
+        assert!(reverse_geocode(lat, lon).await.is_ok());
+        assert!(logs_contain("Reverse geocode cache hit"));
+        assert!(!logs_contain("47.123456"));
+        assert!(!logs_contain("8.654321"));
     }
 }

@@ -513,9 +513,10 @@ fn match_emma_id(
         }
     }
 
+    // Counts only: warn is on by default, and the terms are the user's place names.
     tracing::warn!(
-        "No EMMA_ID matched {:?} in {}; will try the feed's own area names",
-        search_terms,
+        "No EMMA_ID matched {} place name(s) in {}; will try the feed's own area names",
+        search_terms.len(),
         country_prefix
     );
     None
@@ -880,11 +881,10 @@ fn meteoalarm_alerts_from_feed(
         schemes.sort_unstable();
         schemes.dedup();
         tracing::warn!(
-            "MeteoAlarm feed ({}) carries no EMMA_ID geocodes (found {:?}); the filter to {} \
+            "MeteoAlarm feed ({}) carries no EMMA_ID geocodes (found {:?}); the EMMA_ID filter \
             cannot apply, matching by area name instead",
             country,
-            schemes,
-            user_id
+            schemes
         );
     }
 
@@ -925,11 +925,11 @@ fn meteoalarm_alerts_from_feed(
                 .collect();
             let shown: Vec<&str> = area_names.iter().take(10).map(String::as_str).collect();
             tracing::warn!(
-                "Fetched {} alert(s) from MeteoAlarm ({}), UNFILTERED - no area name matched {:?} \
-                among {} area(s) ({:?}{}); these are national alerts, not local ones",
+                "Fetched {} alert(s) from MeteoAlarm ({}), UNFILTERED - none of {} place name(s) \
+                matched among {} area(s) ({:?}{}); these are national alerts, not local ones",
                 alerts.len(),
                 country,
-                search_terms,
+                search_terms.len(),
                 area_names.len(),
                 shown,
                 if area_names.len() > shown.len() {
@@ -969,9 +969,9 @@ fn apply_local_area_match(
     }
     let Some(local) = match_area(search_terms, &local_names) else {
         tracing::warn!(
-            "No local-language area name matched {:?} among {} for MeteoAlarm ({}); \
+            "None of {} place name(s) matched a local-language area name among {} for MeteoAlarm ({}); \
             national feed stays unfiltered",
-            search_terms,
+            search_terms.len(),
             local_names.len(),
             country
         );
@@ -3095,5 +3095,53 @@ mod tests {
 
         assert_eq!(report.alerts.len(), 3);
         assert!(!report.region_filtered);
+    }
+
+    // Warn is on by default, so a matching miss must log counts, not the
+    // user's place names or EMMA_ID. "Placeholdville" is in no feed or table.
+    #[test]
+    #[tracing_test::traced_test]
+    fn emma_id_miss_warning_carries_no_place_names() {
+        let codenames = codenames(&[("PL101", "Warszawa")]);
+        let address = address(Some("Placeholdville"), None, None);
+
+        assert!(match_emma_id(&address, "pl", &codenames).is_none());
+        assert!(logs_contain("No EMMA_ID matched"));
+        assert!(!logs_contain("Placeholdville"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn unfiltered_feed_warnings_carry_no_place_names_or_emma_id() {
+        let xml = format!(
+            "<feed>{}{}</feed>",
+            nuts3_entry("fr-1", "FR713", "Drôme"),
+            nuts3_entry("fr-2", "FR813", "Hérault")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let terms = vec!["Placeholdville".to_string()];
+
+        let report = meteoalarm_alerts_from_feed(feed, &Some("FR101".to_string()), &terms, "test");
+
+        assert!(!report.region_filtered);
+        assert!(logs_contain("UNFILTERED"));
+        assert!(!logs_contain("Placeholdville"));
+        assert!(!logs_contain("FR101"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn local_name_miss_warning_carries_no_place_names() {
+        let report = AlertReport {
+            alerts: vec![],
+            region_filtered: false,
+        };
+        let areas = local_areas(&[("Αττική", "Attiki")]);
+        let terms = vec!["Πλασεχολντβιλ".to_string()];
+
+        apply_local_area_match(report, &terms, &areas, "test");
+
+        assert!(logs_contain("national feed stays unfiltered"));
+        assert!(!logs_contain("Πλασεχολντβιλ"));
     }
 }

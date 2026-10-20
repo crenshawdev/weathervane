@@ -88,10 +88,7 @@ Every network response is untrusted. HTTPS protects the transport for every endp
 
 - The aqicn token. The frontend owns storage; the crate holds it only for the duration of `fetch_air_quality`. It travels in the query string of the `api.waqi.info` request, so it is visible to waqi and to anything that logs full URLs (a proxy set through `HTTPS_PROXY` sees only the host, not the query, over TLS). It is kept out of tracing by `without_url()` and out of `Error` because `From<reqwest::Error>` maps to payload-free variants. The tests in `src/client.rs` guard this.
 - Location, which is the user's most sensitive data here even though it is not a credential. Where it currently ends up in logs:
-  - `src/geo.rs:331` logs the exact coordinates at debug on a reverse-geocode cache hit.
-  - `src/alerts.rs:515`, `:926` and `:971` log the Nominatim place names (city, town, village, county, state) at warn when MeteoAlarm matching misses.
-  - `src/alerts.rs:709` and `:712` log the matched place name at debug; `:510` logs the resolved EMMA_ID at debug.
-  - `src/weather_nws.rs:144` logs the NWS station ID at debug, which places the user within a few kilometres.
-  - [VERIFY: whether these are intended exceptions to the coordinate-free log posture or gaps in it.]
+  - No log line at any level carries coordinates, and no warn-level line carries the user's place names or EMMA_ID; MeteoAlarm misses log how many place names were tried and the country. Tests in `src/alerts.rs` and `src/geo.rs` assert this for each of those warnings and the reverse-geocode cache hit.
+  - Intended exception, debug level only, for diagnosing region matching: `src/alerts.rs:511` logs the resolved EMMA_ID, `:711` and `:715` the place name that matched or was ambiguous, `:864`, `:910` and `:994` the region the alerts were filtered to, and `src/weather_nws.rs:144` the NWS station ID, which places the user within a few kilometres. Debug is off unless the frontend or the user turns it on.
 - The user's public IP goes to ipwho.is, which sees it and the location it returns.
 - The crate holds no secrets of its own. Releases publish to crates.io from `.github/workflows/release.yml` through crates.io OIDC in the `release` environment, so no long-lived registry token is stored in the repo.

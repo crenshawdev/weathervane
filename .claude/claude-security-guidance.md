@@ -16,7 +16,7 @@ Every network response is untrusted input. The assets are the user's location, t
 
 ### Location and the aqicn token
 - Error payloads never carry search text or coordinates (CONTRACT.md PII rule). `Error::NoResults { query }` keeps the query out of `Display` and `WireError`; a new variant or `Display` impl must keep that. `From<reqwest::Error>` must keep mapping to payload-free variants.
-- Logs are coordinate-free. Flag any new `tracing` call that formats latitude, longitude, a Nominatim place name, a full request URL, or a station ID. Known existing sites: `src/geo.rs:331`, `src/alerts.rs:510`, `:515`, `:709`, `:712`, `:926`, `:971`, `src/weather_nws.rs:144`.
+- Logs are coordinate-free at every level, and warn and above carry no place names, EMMA_IDs or station IDs; log counts and the country instead. Flag any new `tracing` call that formats latitude, longitude or a full request URL, and any above debug that formats a Nominatim place name, an EMMA_ID or a station ID. The debug-level region-matching logs in `src/alerts.rs` and the station ID at `src/weather_nws.rs:144` are an intended exception for diagnosing region matching.
 - Any reqwest error logged or stringified must go through `.without_url()`. A bare `{}` or `{:?}` of a `reqwest::Error` whose request URL carries coordinates or the token is a leak.
 - The aqicn token goes only to `api.waqi.info`, URL-encoded, and nowhere else: not logs, errors, caches, or another host. Keep the `src/client.rs` sentinel leak tests passing and extend them when a new path handles the token.
 
