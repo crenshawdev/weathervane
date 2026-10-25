@@ -12,16 +12,24 @@
 # and a job skipped by its `if:` never downloads its actions.
 #
 # The required `security-review` check is posted by the review jobs once a
-# review has passed, never by a job of that name. A pull request from this
-# repository is reviewed by itself. A pull request from a fork gets no Actions
-# secrets, so nothing posts the check and it cannot merge until someone with
-# write access reviews it from main's copy of this workflow:
+# review has passed. A pull request from this repository is reviewed by
+# itself. A pull request from a fork gets no Actions secrets, so it is not
+# reviewed until someone with write access reviews it from main's copy of
+# this workflow:
 #
 #   gh workflow run fast.yml -f pr=<pull request number>
 #
 # That run reads the fork's code and never runs it, so the API key never meets
 # code the fork controls, and only a run started from the default branch can
 # review.
+#
+# A fork's pull request runs the fork's copy of the workflows, so it can add a
+# job named security-review of its own. To keep that from passing the check,
+# set the repository variable SENTINEL_APP_CLIENT_ID and the secret
+# SENTINEL_APP_PRIVATE_KEY (as an Actions and a Dependabot secret) for a
+# GitHub App of yours with write access to checks, and require the check from
+# that app in the ruleset. The review jobs then post it as the app, which a
+# fork's job cannot. Without the variable they post it as GitHub Actions.
 #
 # On a public repo, set the repository variable SENTINEL_REVIEW_AGE_RECIPIENT
 # to your age public key. The review is then encrypted and uploaded as the
@@ -138,9 +146,19 @@ jobs:
       # The required check. It is posted only after a review passed: a failed
       # check of the same name would keep blocking the commit after a later
       # pass. Its external_id names this run, which read-review.sh reads.
+      # As the review app when one is set up, so a fork's own job named
+      # security-review cannot stand in for this check.
+      - name: Get the review app's token
+        id: app
+        if: vars.SENTINEL_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.SENTINEL_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SENTINEL_APP_PRIVATE_KEY }}
+          permission-checks: write
       - name: Mark the commit reviewed
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
           SHA: ${{ github.event.pull_request.head.sha }}
         run: >-
           gh api "repos/$GITHUB_REPOSITORY/check-runs" --silent
@@ -150,17 +168,30 @@ jobs:
           -f "output[summary]=Reviewed by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
   dependabot:
-    # Dependabot's pull requests get no secrets, so they are not reviewed;
-    # their dependency changes go through the mechanical job's checks. The
-    # required check is marked skipped, which lets them merge.
-    if: github.event_name == 'pull_request' && github.server_url == 'https://github.com' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == 'dependabot[bot]'
+    # Dependabot's pull requests get no Actions secrets, so they are not
+    # reviewed; their dependency changes go through the mechanical job's
+    # checks. The required check is marked skipped, which lets them merge.
+    # The run has to be Dependabot's own: a push to its branch by anyone
+    # else goes unmarked. The actor test only narrows the author test, so
+    # zizmor's spoofing concern cannot widen who gets through.
+    if: github.event_name == 'pull_request' && github.server_url == 'https://github.com' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == 'dependabot[bot]' && github.actor == 'dependabot[bot]' # zizmor: ignore[bot-conditions]
     runs-on: ubuntu-latest
     permissions:
       checks: write
     steps:
+      # As the review app when one is set up, so a fork's own job named
+      # security-review cannot stand in for this check.
+      - name: Get the review app's token
+        id: app
+        if: vars.SENTINEL_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.SENTINEL_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SENTINEL_APP_PRIVATE_KEY }}
+          permission-checks: write
       - name: Mark the commit not reviewed
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
           SHA: ${{ github.event.pull_request.head.sha }}
         run: >-
           gh api "repos/$GITHUB_REPOSITORY/check-runs" --silent
@@ -236,9 +267,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ inputs.pr }}
         run: gh pr comment "$PR" -R "$GITHUB_REPOSITORY" --body-file pr/security-review.md --edit-last --create-if-none
+      # As the review app when one is set up, so a fork's own job named
+      # security-review cannot stand in for this check.
+      - name: Get the review app's token
+        id: app
+        if: vars.SENTINEL_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.SENTINEL_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SENTINEL_APP_PRIVATE_KEY }}
+          permission-checks: write
       - name: Mark the commit reviewed
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
           SHA: ${{ steps.pr.outputs.sha }}
         run: >-
           gh api "repos/$GITHUB_REPOSITORY/check-runs" --silent
