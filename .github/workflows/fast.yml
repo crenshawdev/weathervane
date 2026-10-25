@@ -191,6 +191,11 @@ jobs:
           path: pr
           fetch-depth: 0
           persist-credentials: false
+      # A symlink in the pull request could point the review's reads or
+      # writes outside its tree, at main's kit or /proc/self/environ. The
+      # diff is built from the commits, so it still shows any it adds.
+      - name: Remove the pull request's symlinks
+        run: find pr -path pr/.git -prune -o -type l -exec rm -f {} +
       # The commit marked is the one checked out, so a push during the review
       # leaves the new head unmarked.
       - name: Read the pull request
