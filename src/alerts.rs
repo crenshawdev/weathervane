@@ -242,6 +242,8 @@ struct MeteoAlarmEntry {
     cap_geocode: Option<MeteoAlarmGeocode>,
     #[serde(rename = "areaDesc")]
     cap_area_desc: Option<String>,
+    #[serde(rename = "link", default)]
+    links: Vec<MeteoAlarmLink>,
 }
 
 /// Geocode element containing EMMA_ID area identifier.
@@ -252,6 +254,14 @@ struct MeteoAlarmGeocode {
     #[serde(rename = "valueName")]
     value_name: Option<String>,
     value: Option<String>,
+}
+
+/// Atom link. France carries the entry's EMMA_ID only here, in an
+/// `?geocode=EMMA_ID:<id>` href.
+#[derive(Debug, Deserialize)]
+struct MeteoAlarmLink {
+    #[serde(rename = "@href")]
+    href: Option<String>,
 }
 
 /// MeteoAlarm v1 JSON API response, `/api/v1/warnings/feeds-<slug>`. Read
@@ -620,6 +630,15 @@ const AREA_AFFIXES: &[&str] = &[
 /// Lowercase, diacritics folded, split into tokens, administrative affixes
 /// dropped. "Grad Zagreb" and "Zagreb region" both become ["zagreb"].
 fn area_tokens(name: &str) -> Vec<String> {
+    area_words(name)
+        .into_iter()
+        .filter(|t| !AREA_AFFIXES.contains(&t.as_str()))
+        .collect()
+}
+
+/// Lowercase, diacritics folded, split into words, every word kept, so
+/// "Sofia" and "Sofia-region" stay apart and "Pas-de-Calais" is "Pas de Calais".
+fn area_words(name: &str) -> Vec<String> {
     use unicode_normalization::UnicodeNormalization;
 
     let folded: String = name
@@ -629,7 +648,7 @@ fn area_tokens(name: &str) -> Vec<String> {
         .to_lowercase();
     folded
         .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty() && !AREA_AFFIXES.contains(t))
+        .filter(|t| !t.is_empty())
         .map(str::to_string)
         .collect()
 }
@@ -721,6 +740,27 @@ fn rank_area_match(term_tokens: &[String], area_tokens: &[String]) -> Option<Are
 /// counts only when every area at that rank is the same area, so a place name
 /// that fits several regions ("Seine" against three départements) is a miss
 /// for that term rather than a guess, and the next term is tried.
+/// The first place name, broadest first, whose words are exactly one area
+/// name's, every word counted. A name that is exactly several areas picks none
+/// and the next is tried. Broadest first because the feed's areas are regions:
+/// Landes is a commune in Charente-Maritime as well as a département, and the
+/// county says which one the user is in.
+fn match_area_exactly(search_terms: &[String], area_names: &[String]) -> Option<String> {
+    search_terms.iter().rev().find_map(|term| {
+        let term_words = area_words(term);
+        let mut exact: Vec<&str> = area_names
+            .iter()
+            .filter(|area| !term_words.is_empty() && area_words(area) == term_words)
+            .map(String::as_str)
+            .collect();
+        exact.dedup();
+        match exact.as_slice() {
+            [area] => Some(area.to_string()),
+            _ => None,
+        }
+    })
+}
+
 fn match_area(search_terms: &[String], area_names: &[String]) -> Option<String> {
     for term in search_terms {
         let term_tokens = area_tokens(term);
@@ -831,24 +871,32 @@ async fn fetch_meteoalarm_alerts(latitude: f64, longitude: f64) -> Result<AlertR
     ))
 }
 
-/// The entry's EMMA_ID, if the feed tagged it with one. A geocode under any
-/// other scheme (`NUTS3` in France) is not an EMMA_ID and yields `None`.
+/// The entry's EMMA_ID, from `cap:geocode` when it is tagged as one, otherwise
+/// from the area link's href. A geocode under any other scheme (`NUTS3` in
+/// France) is not an EMMA_ID; France carries the EMMA_ID only in the link.
 fn entry_emma_id(entry: &MeteoAlarmEntry) -> Option<&str> {
     entry
         .cap_geocode
         .as_ref()
         .filter(|gc| gc.value_name.as_deref() == Some("EMMA_ID"))
         .and_then(|gc| gc.value.as_deref())
+        .or_else(|| {
+            entry.links.iter().find_map(|link| {
+                let (_, rest) = link.href.as_deref()?.split_once("geocode=EMMA_ID:")?;
+                rest.split('&').next().filter(|id| !id.is_empty())
+            })
+        })
 }
 
 /// Lives in its own function so it can be unit-tested against fixtures without a live network.
 ///
 /// Two stages. Stage 1: a resolved EMMA_ID filters a feed that tags its
-/// entries with EMMA_IDs; this is exact and, since the feed only lists regions
-/// that are alerting, it is the only stage that can tell a quiet day from a
-/// miss. Stage 2, when stage 1 has no usable filter: the user's place names
-/// are matched against the feed's own `areaDesc` values. A hit filters to that
-/// area; a miss keeps the national feed and says so. Stage 3, in
+/// entries with EMMA_IDs; an entry without one is kept only when its area is
+/// the one stage 2's place-name match picks. The EMMA_ID match is exact and, since the feed
+/// only lists regions that are alerting, it is the only stage that can tell a
+/// quiet day from a miss. Stage 2, when stage 1 has no usable filter: the user's
+/// place names are matched against the feed's own `areaDesc` values. A hit filters
+/// to that area; a miss keeps the national feed and says so. Stage 3, in
 /// `fetch_meteoalarm_alerts`, retries a stage-2 miss for non-Latin place
 /// names against the feed's local-language names (`apply_local_area_match`).
 fn meteoalarm_alerts_from_feed(
@@ -870,27 +918,77 @@ fn meteoalarm_alerts_from_feed(
         .iter()
         .any(|entry| entry_emma_id(entry).is_some());
 
+    // Both stages macth place names against the feed's own area names.
+    let mut area_names: Vec<String> = feed
+        .entries
+        .iter()
+        .filter_map(|entry| entry.cap_area_desc.clone())
+        .filter(|name| !name.is_empty())
+        .collect();
+    area_names.sort_unstable();
+    area_names.dedup();
+
     // Stage 1: EMMA_ID against an EMMA_ID-tagged feed.
     if let Some(user_id) = user_emma_id {
         if feed_has_emma_ids {
-            let untagged = feed
+            // An entry without an EMMA_ID is kept when its area is the user's,
+            // word for word: an area the feed tags with the user's own
+            // EMMA_ID, or one a place name is exactly. France's coastal
+            // entries name their département only this way. Exactly, because
+            // a token match lets "Saint-Laurent-du-Var" pick Var's entry over
+            // Alpes-Maritimes', and every word, so "Sofia" is not
+            // "Sofia-region".
+            let mut own_areas: Vec<Vec<String>> = feed
                 .entries
                 .iter()
-                .filter(|entry| entry_emma_id(entry).is_none())
-                .count();
-            if untagged > 0 {
-                tracing::debug!(
-                    "Dropped {} untagged MeteoAlarm entr(y/ies) while filtering to {}",
-                    untagged,
-                    user_id
-                );
+                .filter(|entry| entry_emma_id(entry) == Some(user_id.as_str()))
+                .filter_map(|entry| entry.cap_area_desc.as_deref())
+                .map(area_words)
+                .filter(|words| !words.is_empty())
+                .collect();
+            // A place name may not pick an area the feed tags with another
+            // EMMA_ID: the feed has said whose that area is.
+            let others: Vec<Vec<String>> = feed
+                .entries
+                .iter()
+                .filter(|entry| entry_emma_id(entry).is_some_and(|id| id != user_id))
+                .filter_map(|entry| entry.cap_area_desc.as_deref())
+                .map(area_words)
+                .collect();
+            let unclaimed: Vec<String> = area_names
+                .iter()
+                .filter(|area| !others.contains(&area_words(area)))
+                .cloned()
+                .collect();
+            if let Some(area) = match_area_exactly(search_terms, &unclaimed) {
+                own_areas.push(area_words(&area));
             }
-            let filter = Some(user_id.clone());
+            let mut dropped = 0;
             let alerts: Vec<AlertEntry> = feed
                 .entries
                 .into_iter()
-                .filter_map(|entry| parse_meteoalarm_entry(entry, &filter))
+                .filter(|entry| match entry_emma_id(entry) {
+                    Some(entry_id) => entry_id == user_id,
+                    None => {
+                        let keep = entry
+                            .cap_area_desc
+                            .as_deref()
+                            .is_some_and(|area| own_areas.contains(&area_words(area)));
+                        if !keep {
+                            dropped += 1;
+                        }
+                        keep
+                    }
+                })
+                .filter_map(|entry| parse_meteoalarm_entry(entry, &None))
                 .collect();
+            if dropped > 0 {
+                tracing::debug!(
+                    "Dropped {} untagged MeteoAlarm entr(y/ies) while filtering to {}",
+                    dropped,
+                    user_id
+                );
+            }
             tracing::debug!(
                 "Fetched {} alert(s) from MeteoAlarm ({}), filtered to {}",
                 alerts.len(),
@@ -918,16 +1016,6 @@ fn meteoalarm_alerts_from_feed(
             schemes
         );
     }
-
-    // Stage 2: place names against the feed's own area names.
-    let mut area_names: Vec<String> = feed
-        .entries
-        .iter()
-        .filter_map(|entry| entry.cap_area_desc.clone())
-        .filter(|name| !name.is_empty())
-        .collect();
-    area_names.sort_unstable();
-    area_names.dedup();
 
     match match_area(search_terms, &area_names) {
         Some(area) => {
@@ -3047,9 +3135,17 @@ mod tests {
     // Feeds that are not EMMA_ID-tagged (France uses NUTS3)
     // -----------------------------------------------------------------
 
-    /// The shape of every entry in the live French feed on 2026-09-02: a NUTS3
-    /// geocode, with the EMMA_ID only in a link href that is not parsed.
-    fn nuts3_entry(id: &str, nuts3: &str, area: &str) -> String {
+    /// The shape of the live French feed on 2026-10-25: a NUTS3 geocode, with
+    /// the EMMA_ID only in a link href among the entry's other links. `None`
+    /// leaves the entry without an EMMA_ID, as on the feed's coastal entries.
+    fn nuts3_entry(id: &str, nuts3: &str, emma_id: Option<&str>, area: &str) -> String {
+        let emma_link = emma_id
+            .map(|emma_id| {
+                format!(
+                    r#"<link title="{area}" href="https://meteoalarm.org?geocode=EMMA_ID:{emma_id}" hreflang="en"/>"#
+                )
+            })
+            .unwrap_or_default();
         format!(
             r#"<entry>
                 <id>https://feeds.meteoalarm.org/feed/{id}</id>
@@ -3057,22 +3153,24 @@ mod tests {
                     <valueName>NUTS3</valueName>
                     <value>{nuts3}</value>
                 </cap:geocode>
-                <link title="{area}" href="https://meteoalarm.org?geocode=EMMA_ID:FR031" hreflang="en"/>
+                {emma_link}
                 <cap:areaDesc>{area}</cap:areaDesc>
                 <cap:event>Yellow Wind Warning</cap:event>
                 <cap:severity>Moderate</cap:severity>
                 <cap:sent>2026-06-01T08:00:00Z</cap:sent>
                 <cap:expires>2099-01-01T00:00:00Z</cap:expires>
+                <link type="application/cap+xml" href="https://feeds.meteoalarm.org/api/v1/warnings/feeds-france/{id}"/>
+                <link title="France" rel="related" href="https://meteoalarm.org?region=FR" hreflang="en"/>
             </entry>"#
         )
     }
 
     #[test]
-    fn meteoalarm_nuts3_geocode_is_not_an_emma_id() {
+    fn meteoalarm_nuts3_entry_takes_emma_id_from_link() {
         let entry: MeteoAlarmEntry =
-            quick_xml::de::from_str(&nuts3_entry("fr-1", "FR713", "Drôme")).unwrap();
+            quick_xml::de::from_str(&nuts3_entry("fr-1", "FR713", Some("FR031"), "Drôme")).unwrap();
 
-        assert_eq!(entry_emma_id(&entry), None);
+        assert_eq!(entry_emma_id(&entry), Some("FR031"));
         assert_eq!(entry.cap_geocode.unwrap().value.as_deref(), Some("FR713"));
     }
 
@@ -3080,8 +3178,8 @@ mod tests {
     fn meteoalarm_feed_without_emma_ids_renders_unfiltered() {
         let xml = format!(
             "<feed>{}{}</feed>",
-            nuts3_entry("fr-1", "FR713", "Drôme"),
-            nuts3_entry("fr-2", "FR813", "Hérault")
+            nuts3_entry("fr-1", "FR713", None, "Drôme"),
+            nuts3_entry("fr-2", "FR813", None, "Hérault")
         );
         let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
         let report = meteoalarm_alerts_from_feed(feed, &Some("FR101".to_string()), &[], "test");
@@ -3109,13 +3207,13 @@ mod tests {
                 </entry>
                 {}
             </feed>"#,
-            nuts3_entry("fr-3", "FR713", "Drôme")
+            nuts3_entry("fr-3", "FR713", None, "Drôme")
         );
         let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
         let report = meteoalarm_alerts_from_feed(feed, &Some("FR101".to_string()), &[], "test");
 
-        // One entry carries an EMMA_ID, so the feed is filterable: the NUTS3
-        // entry is untagged for this purpose and is dropped.
+        // One entry carries an EMMA_ID, so the feed is filterable: the entry
+        // without one is untagged and is dropped.
         assert_eq!(report.alerts.len(), 1);
         assert_eq!(
             report.alerts[0].alert.id,
@@ -3340,21 +3438,210 @@ mod tests {
     }
 
     #[test]
-    fn france_nuts3_feed_filters_by_area() {
-        // An EMMA_ID resolved but the feed is NUTS3-tagged, so stage 1 cannot
-        // apply; the area name can.
+    fn france_nuts3_feed_filters_by_link_emma_id() {
+        // The geocode is NUTS3, but each entry's link carries its EMMA_ID, so
+        // stage 1 applies. "Valence" matches no area name, so stage 2 could
+        // not have filtered this.
         let xml = format!(
             "<feed>{}{}</feed>",
-            nuts3_entry("fr-1", "FR713", "Drôme"),
-            nuts3_entry("fr-2", "FR813", "Hérault")
+            nuts3_entry("fr-1", "FR713", Some("FR031"), "Drôme"),
+            nuts3_entry("fr-2", "FR813", Some("FR034"), "Hérault")
         );
         let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
-        let terms = strings(&["Valence", "Drôme"]);
+        let terms = strings(&["Valence"]);
         let report =
             meteoalarm_alerts_from_feed(feed, &Some("FR031".to_string()), &terms, "France");
 
         assert_eq!(report.alerts.len(), 1);
         assert_eq!(report.alerts[0].area_desc, "Drôme");
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn france_quiet_day_stays_filtered() {
+        // Paris resolves FR101 and nothing in the feed is for it: a quiet day,
+        // not a miss, so the report is an empty filtered list rather than the
+        // national feed.
+        let xml = format!(
+            "<feed>{}{}</feed>",
+            nuts3_entry("fr-1", "FR713", Some("FR031"), "Drôme"),
+            nuts3_entry("fr-2", "FR813", Some("FR034"), "Hérault")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("FR101".to_string()),
+            &strings(&["Paris"]),
+            "France",
+        );
+
+        assert!(report.alerts.is_empty());
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn untagged_entry_follows_the_users_tagged_area() {
+        // Calais resolves to Pas-de-Calais, but "Calais" is not exactly that
+        // name. The feed tags an inland Pas-de-Calais entry with the user's
+        // EMMA_ID, which says what their area is called, so the coastal entry
+        // of the same name stays and Somme's goes.
+        let xml = format!(
+            "<feed>{}{}{}</feed>",
+            nuts3_entry("fr-1", "FRE11", Some("FR069"), "Pas-de-Calais"),
+            nuts3_entry("fr-2", "FRE11", None, "Pas-de-Calais"),
+            nuts3_entry("fr-3", "FRE23", None, "Somme")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("FR069".to_string()),
+            &strings(&["Calais"]),
+            "France",
+        );
+
+        assert_eq!(report.alerts.len(), 2);
+        assert!(report
+            .alerts
+            .iter()
+            .all(|alert| alert.area_desc == "Pas-de-Calais"));
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn untagged_entry_matches_the_county_before_the_commune() {
+        // Landes is a commune in Charente-Maritime and also a département. The
+        // county is tried first, so the commune's name does not pick Landes'
+        // coastal warning over the user's own.
+        let xml = format!(
+            "<feed>{}{}{}</feed>",
+            nuts3_entry("fr-1", "FR713", Some("FR031"), "Drôme"),
+            nuts3_entry("fr-2", "FRI13", None, "Landes"),
+            nuts3_entry("fr-3", "FRI32", None, "Charente-Maritime")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("FR016".to_string()),
+            &strings(&["Landes", "Charente-Maritime"]),
+            "France",
+        );
+
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(report.alerts[0].area_desc, "Charente-Maritime");
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn untagged_entry_is_not_matched_to_another_ids_area() {
+        // The feed tags Landes with its own EMMA_ID, so a user elsewhere whose
+        // only place name is "Landes" does not take Landes' coastal warning.
+        let xml = format!(
+            "<feed>{}{}</feed>",
+            nuts3_entry("fr-1", "FRI13", Some("FR040"), "Landes"),
+            nuts3_entry("fr-2", "FRI13", None, "Landes")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("FR016".to_string()),
+            &strings(&["Landes"]),
+            "France",
+        );
+
+        assert!(report.alerts.is_empty());
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn untagged_entry_counts_level_words() {
+        // "Sofia" is the city; "Sofia-region" is the area around it. Dropping
+        // "region" would make them one name, so it is kept.
+        let xml = format!(
+            "<feed>{}{}</feed>",
+            nuts3_entry("bg-1", "BG411", Some("BG002"), "Blagoevgrad"),
+            nuts3_entry("bg-2", "BG412", None, "Sofia-region")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("BG001".to_string()),
+            &strings(&["Sofia"]),
+            "България",
+        );
+
+        assert!(report.alerts.is_empty());
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn untagged_entry_needs_an_exact_area_name() {
+        // Saint-Laurent-du-Var is in Alpes-Maritimes. Its name holds the token
+        // "Var", which a token match would take for Var's coastal warning; the
+        // county is exactly Alpes-Maritimes, so that one is kept instead.
+        let xml = format!(
+            "<feed>{}{}{}</feed>",
+            nuts3_entry("fr-1", "FR713", Some("FR031"), "Drôme"),
+            nuts3_entry("fr-2", "FRL05", None, "Var"),
+            nuts3_entry("fr-3", "FRL03", None, "Alpes-Maritimes")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("FR029".to_string()),
+            &strings(&["Saint-Laurent-du-Var", "Alpes-Maritimes"]),
+            "France",
+        );
+
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(report.alerts[0].area_desc, "Alpes-Maritimes");
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn france_coastal_entry_kept_by_area_name() {
+        // Somme's coastal warning carries no EMMA_ID but names the
+        // département in its areaDesc, so it stays under the filter. Gironde's
+        // does not match the user's place names and is dropped.
+        let xml = format!(
+            "<feed>{}{}{}</feed>",
+            nuts3_entry("fr-1", "FR713", Some("FR031"), "Drôme"),
+            nuts3_entry("fr-2", "FRE23", None, "Somme"),
+            nuts3_entry("fr-3", "FRI12", None, "Gironde")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("FR080".to_string()),
+            &strings(&["Somme"]),
+            "France",
+        );
+
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(report.alerts[0].area_desc, "Somme");
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn ambiguous_area_name_keeps_no_untagged_entry() {
+        // "Seine" fits three départements, so it picks no area and the
+        // untagged Seine-Maritime entry is dropped; matched against the
+        // untagged names alone it would have been kept.
+        let xml = format!(
+            "<feed>{}{}{}</feed>",
+            nuts3_entry("fr-1", "FR102", Some("FR077"), "Seine-et-Marne"),
+            nuts3_entry("fr-2", "FR106", Some("FR093"), "Seine-Saint-Denis"),
+            nuts3_entry("fr-3", "FRD22", None, "Seine-Maritime")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("FR077".to_string()),
+            &strings(&["Seine"]),
+            "France",
+        );
+
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(report.alerts[0].area_desc, "Seine-et-Marne");
         assert!(report.region_filtered);
     }
 
@@ -3652,9 +3939,9 @@ mod tests {
         // affixes drop; the raw compare keeps them apart.
         let xml = format!(
             "<feed>{}{}{}</feed>",
-            nuts3_entry("bg-1", "BG411", "Sofia-city"),
-            nuts3_entry("bg-2", "BG412", "Sofia-region"),
-            nuts3_entry("bg-3", "BG413", "Blagoevgrad")
+            nuts3_entry("bg-1", "BG411", None, "Sofia-city"),
+            nuts3_entry("bg-2", "BG412", None, "Sofia-region"),
+            nuts3_entry("bg-3", "BG413", None, "Blagoevgrad")
         );
         let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
         let report = meteoalarm_alerts_from_feed(feed, &None, &sofia_terms(), "България");
@@ -3711,8 +3998,8 @@ mod tests {
     fn unfiltered_feed_warnings_carry_no_place_names_or_emma_id() {
         let xml = format!(
             "<feed>{}{}</feed>",
-            nuts3_entry("fr-1", "FR713", "Drôme"),
-            nuts3_entry("fr-2", "FR813", "Hérault")
+            nuts3_entry("fr-1", "FR713", None, "Drôme"),
+            nuts3_entry("fr-2", "FR813", None, "Hérault")
         );
         let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
         let terms = vec!["Placeholdville".to_string()];
