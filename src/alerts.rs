@@ -740,11 +740,13 @@ fn rank_area_match(term_tokens: &[String], area_tokens: &[String]) -> Option<Are
 /// counts only when every area at that rank is the same area, so a place name
 /// that fits several regions ("Seine" against three départements) is a miss
 /// for that term rather than a guess, and the next term is tried.
-/// The first place name, most specific first, whose words are exactly one
-/// area name's, every word counted. A name that is exactly several areas
-/// picks none and the next is tried.
+/// The first place name, broadest first, whose words are exactly one area
+/// name's, every word counted. A name that is exactly several areas picks none
+/// and the next is tried. Broadest first because the feed's areas are regions:
+/// Landes is a commune in Charente-Maritime as well as a département, and the
+/// county says which one the user is in.
 fn match_area_exactly(search_terms: &[String], area_names: &[String]) -> Option<String> {
-    search_terms.iter().find_map(|term| {
+    search_terms.iter().rev().find_map(|term| {
         let term_words = area_words(term);
         let mut exact: Vec<&str> = area_names
             .iter()
@@ -944,7 +946,21 @@ fn meteoalarm_alerts_from_feed(
                 .map(area_words)
                 .filter(|words| !words.is_empty())
                 .collect();
-            if let Some(area) = match_area_exactly(search_terms, &area_names) {
+            // A place name may not pick an area the feed tags with another
+            // EMMA_ID: the feed has said whose that area is.
+            let others: Vec<Vec<String>> = feed
+                .entries
+                .iter()
+                .filter(|entry| entry_emma_id(entry).is_some_and(|id| id != user_id))
+                .filter_map(|entry| entry.cap_area_desc.as_deref())
+                .map(area_words)
+                .collect();
+            let unclaimed: Vec<String> = area_names
+                .iter()
+                .filter(|area| !others.contains(&area_words(area)))
+                .cloned()
+                .collect();
+            if let Some(area) = match_area_exactly(search_terms, &unclaimed) {
                 own_areas.push(area_words(&area));
             }
             let mut dropped = 0;
@@ -3488,6 +3504,51 @@ mod tests {
             .alerts
             .iter()
             .all(|alert| alert.area_desc == "Pas-de-Calais"));
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn untagged_entry_matches_the_county_before_the_commune() {
+        // Landes is a commune in Charente-Maritime and also a département. The
+        // county is tried first, so the commune's name does not pick Landes'
+        // coastal warning over the user's own.
+        let xml = format!(
+            "<feed>{}{}{}</feed>",
+            nuts3_entry("fr-1", "FR713", Some("FR031"), "Drôme"),
+            nuts3_entry("fr-2", "FRI13", None, "Landes"),
+            nuts3_entry("fr-3", "FRI32", None, "Charente-Maritime")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("FR016".to_string()),
+            &strings(&["Landes", "Charente-Maritime"]),
+            "France",
+        );
+
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(report.alerts[0].area_desc, "Charente-Maritime");
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn untagged_entry_is_not_matched_to_another_ids_area() {
+        // The feed tags Landes with its own EMMA_ID, so a user elsewhere whose
+        // only place name is "Landes" does not take Landes' coastal warning.
+        let xml = format!(
+            "<feed>{}{}</feed>",
+            nuts3_entry("fr-1", "FRI13", Some("FR040"), "Landes"),
+            nuts3_entry("fr-2", "FRI13", None, "Landes")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("FR016".to_string()),
+            &strings(&["Landes"]),
+            "France",
+        );
+
+        assert!(report.alerts.is_empty());
         assert!(report.region_filtered);
     }
 
