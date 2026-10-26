@@ -731,6 +731,26 @@ fn rank_area_match(term_tokens: &[String], area_tokens: &[String]) -> Option<Are
 /// counts only when every area at that rank is the same area, so a place name
 /// that fits several regions ("Seine" against three départements) is a miss
 /// for that term rather than a guess, and the next term is tried.
+/// The first place name, most specific first, that is exactly one area name.
+/// A name that is exactly several areas picks none and the next is tried.
+fn match_area_exactly(search_terms: &[String], area_names: &[String]) -> Option<String> {
+    search_terms.iter().find_map(|term| {
+        let term_tokens = area_tokens(term);
+        let mut exact: Vec<&str> = area_names
+            .iter()
+            .filter(|area| {
+                rank_area_match(&term_tokens, &area_tokens(area)) == Some(AreaMatch::Exact)
+            })
+            .map(String::as_str)
+            .collect();
+        exact.dedup();
+        match exact.as_slice() {
+            [area] => Some(area.to_string()),
+            _ => None,
+        }
+    })
+}
+
 fn match_area(search_terms: &[String], area_names: &[String]) -> Option<String> {
     for term in search_terms {
         let term_tokens = area_tokens(term);
@@ -901,10 +921,11 @@ fn meteoalarm_alerts_from_feed(
     // Stage 1: EMMA_ID against an EMMA_ID-tagged feed.
     if let Some(user_id) = user_emma_id {
         if feed_has_emma_ids {
-            // An entry without an EMMA_ID is kept when its area is the one the
-            // place names pick, as stage 2 would; France's coastal entries
-            // name their département only this way.
-            let named_area = match_area(search_terms, &area_names);
+            // An entry without an EMMA_ID is kept when one of the place names
+            // is exactly its area; France's coastal entries name their
+            // département only this way. Exactly, because a token match lets
+            // "Saint-Laurent-du-Var" pick Var's entry over Alpes-Maritimes'.
+            let named_area = match_area_exactly(search_terms, &area_names);
             let mut dropped = 0;
             let alerts: Vec<AlertEntry> = feed
                 .entries
@@ -3415,6 +3436,30 @@ mod tests {
         );
 
         assert!(report.alerts.is_empty());
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn untagged_entry_needs_an_exact_area_name() {
+        // Saint-Laurent-du-Var is in Alpes-Maritimes. Its name holds the token
+        // "Var", which a token match would take for Var's coastal warning; the
+        // county is exactly Alpes-Maritimes, so that one is kept instead.
+        let xml = format!(
+            "<feed>{}{}{}</feed>",
+            nuts3_entry("fr-1", "FR713", Some("FR031"), "Drôme"),
+            nuts3_entry("fr-2", "FRL05", None, "Var"),
+            nuts3_entry("fr-3", "FRL03", None, "Alpes-Maritimes")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("FR029".to_string()),
+            &strings(&["Saint-Laurent-du-Var", "Alpes-Maritimes"]),
+            "France",
+        );
+
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(report.alerts[0].area_desc, "Alpes-Maritimes");
         assert!(report.region_filtered);
     }
 
