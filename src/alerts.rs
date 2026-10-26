@@ -630,6 +630,15 @@ const AREA_AFFIXES: &[&str] = &[
 /// Lowercase, diacritics folded, split into tokens, administrative affixes
 /// dropped. "Grad Zagreb" and "Zagreb region" both become ["zagreb"].
 fn area_tokens(name: &str) -> Vec<String> {
+    area_words(name)
+        .into_iter()
+        .filter(|t| !AREA_AFFIXES.contains(&t.as_str()))
+        .collect()
+}
+
+/// Lowercase, diacritics folded, split into words, every word kept, so
+/// "Sofia" and "Sofia-region" stay apart and "Pas-de-Calais" is "Pas de Calais".
+fn area_words(name: &str) -> Vec<String> {
     use unicode_normalization::UnicodeNormalization;
 
     let folded: String = name
@@ -639,7 +648,7 @@ fn area_tokens(name: &str) -> Vec<String> {
         .to_lowercase();
     folded
         .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty() && !AREA_AFFIXES.contains(t))
+        .filter(|t| !t.is_empty())
         .map(str::to_string)
         .collect()
 }
@@ -731,16 +740,15 @@ fn rank_area_match(term_tokens: &[String], area_tokens: &[String]) -> Option<Are
 /// counts only when every area at that rank is the same area, so a place name
 /// that fits several regions ("Seine" against three départements) is a miss
 /// for that term rather than a guess, and the next term is tried.
-/// The first place name, most specific first, that is exactly one area name.
-/// A name that is exactly several areas picks none and the next is tried.
+/// The first place name, most specific first, whose words are exactly one
+/// area name's, every word counted. A name that is exactly several areas
+/// picks none and the next is tried.
 fn match_area_exactly(search_terms: &[String], area_names: &[String]) -> Option<String> {
     search_terms.iter().find_map(|term| {
-        let term_tokens = area_tokens(term);
+        let term_words = area_words(term);
         let mut exact: Vec<&str> = area_names
             .iter()
-            .filter(|area| {
-                rank_area_match(&term_tokens, &area_tokens(area)) == Some(AreaMatch::Exact)
-            })
+            .filter(|area| !term_words.is_empty() && area_words(area) == term_words)
             .map(String::as_str)
             .collect();
         exact.dedup();
@@ -921,11 +929,24 @@ fn meteoalarm_alerts_from_feed(
     // Stage 1: EMMA_ID against an EMMA_ID-tagged feed.
     if let Some(user_id) = user_emma_id {
         if feed_has_emma_ids {
-            // An entry without an EMMA_ID is kept when one of the place names
-            // is exactly its area; France's coastal entries name their
-            // département only this way. Exactly, because a token match lets
-            // "Saint-Laurent-du-Var" pick Var's entry over Alpes-Maritimes'.
-            let named_area = match_area_exactly(search_terms, &area_names);
+            // An entry without an EMMA_ID is kept when its area is the user's,
+            // word for word: an area the feed tags with the user's own
+            // EMMA_ID, or one a place name is exactly. France's coastal
+            // entries name their département only this way. Exactly, because
+            // a token match lets "Saint-Laurent-du-Var" pick Var's entry over
+            // Alpes-Maritimes', and every word, so "Sofia" is not
+            // "Sofia-region".
+            let mut own_areas: Vec<Vec<String>> = feed
+                .entries
+                .iter()
+                .filter(|entry| entry_emma_id(entry) == Some(user_id.as_str()))
+                .filter_map(|entry| entry.cap_area_desc.as_deref())
+                .map(area_words)
+                .filter(|words| !words.is_empty())
+                .collect();
+            if let Some(area) = match_area_exactly(search_terms, &area_names) {
+                own_areas.push(area_words(&area));
+            }
             let mut dropped = 0;
             let alerts: Vec<AlertEntry> = feed
                 .entries
@@ -933,7 +954,10 @@ fn meteoalarm_alerts_from_feed(
                 .filter(|entry| match entry_emma_id(entry) {
                     Some(entry_id) => entry_id == user_id,
                     None => {
-                        let keep = named_area.is_some() && entry.cap_area_desc == named_area;
+                        let keep = entry
+                            .cap_area_desc
+                            .as_deref()
+                            .is_some_and(|area| own_areas.contains(&area_words(area)));
                         if !keep {
                             dropped += 1;
                         }
@@ -3433,6 +3457,55 @@ mod tests {
             &Some("FR101".to_string()),
             &strings(&["Paris"]),
             "France",
+        );
+
+        assert!(report.alerts.is_empty());
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn untagged_entry_follows_the_users_tagged_area() {
+        // Calais resolves to Pas-de-Calais, but "Calais" is not exactly that
+        // name. The feed tags an inland Pas-de-Calais entry with the user's
+        // EMMA_ID, which says what their area is called, so the coastal entry
+        // of the same name stays and Somme's goes.
+        let xml = format!(
+            "<feed>{}{}{}</feed>",
+            nuts3_entry("fr-1", "FRE11", Some("FR069"), "Pas-de-Calais"),
+            nuts3_entry("fr-2", "FRE11", None, "Pas-de-Calais"),
+            nuts3_entry("fr-3", "FRE23", None, "Somme")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("FR069".to_string()),
+            &strings(&["Calais"]),
+            "France",
+        );
+
+        assert_eq!(report.alerts.len(), 2);
+        assert!(report
+            .alerts
+            .iter()
+            .all(|alert| alert.area_desc == "Pas-de-Calais"));
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn untagged_entry_counts_level_words() {
+        // "Sofia" is the city; "Sofia-region" is the area around it. Dropping
+        // "region" would make them one name, so it is kept.
+        let xml = format!(
+            "<feed>{}{}</feed>",
+            nuts3_entry("bg-1", "BG411", Some("BG002"), "Blagoevgrad"),
+            nuts3_entry("bg-2", "BG412", None, "Sofia-region")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("BG001".to_string()),
+            &strings(&["Sofia"]),
+            "България",
         );
 
         assert!(report.alerts.is_empty());
