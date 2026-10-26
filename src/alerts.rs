@@ -2,7 +2,7 @@
 
 //! Weather alerts from regional providers (NWS, MeteoAlarm, ECCC, BOM).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
 use chrono::{DateTime, Utc};
@@ -964,7 +964,7 @@ fn meteoalarm_alerts_from_feed(
                 own_areas.push(area_words(&area));
             }
             let mut dropped = 0;
-            let alerts: Vec<AlertEntry> = feed
+            let mut alerts: Vec<AlertEntry> = feed
                 .entries
                 .into_iter()
                 .filter(|entry| match entry_emma_id(entry) {
@@ -982,6 +982,7 @@ fn meteoalarm_alerts_from_feed(
                 })
                 .filter_map(|entry| parse_meteoalarm_entry(entry, &None))
                 .collect();
+            dedup_alert_entries(&mut alerts);
             if dropped > 0 {
                 tracing::debug!(
                     "Dropped {} untagged MeteoAlarm entr(y/ies) while filtering to {}",
@@ -1019,12 +1020,13 @@ fn meteoalarm_alerts_from_feed(
 
     match match_area(search_terms, &area_names) {
         Some(area) => {
-            let alerts: Vec<AlertEntry> = feed
+            let mut alerts: Vec<AlertEntry> = feed
                 .entries
                 .into_iter()
                 .filter(|entry| entry.cap_area_desc.as_deref() == Some(area.as_str()))
                 .filter_map(|entry| parse_meteoalarm_entry(entry, &None))
                 .collect();
+            dedup_alert_entries(&mut alerts);
             tracing::debug!(
                 "Fetched {} alert(s) from MeteoAlarm ({}), filtered to area {:?}",
                 alerts.len(),
@@ -1037,11 +1039,12 @@ fn meteoalarm_alerts_from_feed(
             }
         }
         None => {
-            let alerts: Vec<AlertEntry> = feed
+            let mut alerts: Vec<AlertEntry> = feed
                 .entries
                 .into_iter()
                 .filter_map(|entry| parse_meteoalarm_entry(entry, &None))
                 .collect();
+            dedup_alert_entries(&mut alerts);
             let shown: Vec<&str> = area_names.iter().take(10).map(String::as_str).collect();
             tracing::warn!(
                 "Fetched {} alert(s) from MeteoAlarm ({}), UNFILTERED - none of {} place name(s) \
@@ -1063,6 +1066,16 @@ fn meteoalarm_alerts_from_feed(
             }
         }
     }
+}
+
+/// Drops entries that repeat an earlier entry's identifier and area. The atom
+/// feed lists one alert once per polygon and once per geocode in an area, and
+/// those entries differ only in fields `AlertEntry` does not carry. Runs after
+/// filtering: per-geocode entries carry different EMMA_IDs, and deduplicating
+/// first could drop the one that matches the user.
+fn dedup_alert_entries(alerts: &mut Vec<AlertEntry>) {
+    let mut seen = HashSet::new();
+    alerts.retain(|entry| seen.insert((entry.alert.id.clone(), entry.area_desc.clone())));
 }
 
 /// Stage 3: the stage-2 miss retried against the feed's local-language area
@@ -4026,5 +4039,98 @@ mod tests {
 
         assert!(logs_contain("national feed stays unfiltered"));
         assert!(!logs_contain("Πλασεχολντβιλ"));
+    }
+
+    // -----------------------------------------------------------------
+    // Duplicate entries: one alert per polygon or per geocode in an area
+    // -----------------------------------------------------------------
+
+    /// One atom entry of a CAP alert. Entries of the same alert share
+    /// `identifier`; `id` is unique per entry, as in the live feed.
+    fn cap_entry(id: &str, identifier: &str, emma_id: Option<&str>, area: &str) -> String {
+        let geocode = emma_id
+            .map(|emma_id| {
+                format!(
+                    "<cap:geocode><valueName>EMMA_ID</valueName><value>{emma_id}</value></cap:geocode>"
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            r#"<entry>
+                <id>https://feeds.meteoalarm.org/feed/{id}</id>
+                <cap:identifier>{identifier}</cap:identifier>
+                {geocode}
+                <cap:areaDesc>{area}</cap:areaDesc>
+                <cap:event>Gale</cap:event>
+                <cap:severity>Moderate</cap:severity>
+                <cap:sent>2026-06-01T08:00:00Z</cap:sent>
+                <cap:expires>2099-01-01T00:00:00Z</cap:expires>
+            </entry>"#
+        )
+    }
+
+    #[test]
+    fn meteoalarm_polygon_duplicates_collapse_to_one_row() {
+        // Norway and Sweden list a marine alert once per polygon, with no
+        // EMMA_ID; the same alert in another area stays its own row.
+        let xml = format!(
+            "<feed>{}{}{}</feed>",
+            cap_entry("no-1-poly1", "NO.1", None, "Svinoey - Froeya"),
+            cap_entry("no-1-poly0", "NO.1", None, "Svinoey - Froeya"),
+            cap_entry("no-1-area1", "NO.1", None, "Froeya - Roervik")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(feed, &None, &[], "Norge");
+
+        let areas: Vec<&str> = report.alerts.iter().map(|a| a.area_desc.as_str()).collect();
+        assert_eq!(areas, ["Svinoey - Froeya", "Froeya - Roervik"]);
+        assert!(!report.region_filtered);
+    }
+
+    #[test]
+    fn meteoalarm_area_match_collapses_polygon_duplicates() {
+        let xml = format!(
+            "<feed>{}{}</feed>",
+            cap_entry("se-1-poly1", "SE.1", None, "Central Baltic"),
+            cap_entry("se-1-poly0", "SE.1", None, "Central Baltic")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report =
+            meteoalarm_alerts_from_feed(feed, &None, &strings(&["Central Baltic"]), "Sverige");
+
+        assert_eq!(report.alerts.len(), 1);
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn meteoalarm_geocode_duplicates_keep_the_users_entry() {
+        // Finland lists one area's alert once per geocode, each with its own
+        // EMMA_ID. The user's entry is the second: deduplicating before the
+        // filter would keep FI809 and leave FI810 with nothing.
+        let xml = format!(
+            "<feed>{}{}</feed>",
+            cap_entry("fi-1-geo0", "FI.1", Some("FI809"), "Merenkurkku"),
+            cap_entry("fi-1-geo1", "FI.1", Some("FI810"), "Merenkurkku")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(feed, &Some("FI810".to_string()), &[], "Suomi");
+
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(report.alerts[0].area_desc, "Merenkurkku");
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn meteoalarm_geocode_duplicates_collapse_when_unfiltered() {
+        let xml = format!(
+            "<feed>{}{}</feed>",
+            cap_entry("fi-1-geo0", "FI.1", Some("FI809"), "Merenkurkku"),
+            cap_entry("fi-1-geo1", "FI.1", Some("FI810"), "Merenkurkku")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(feed, &None, &[], "Suomi");
+
+        assert_eq!(report.alerts.len(), 1);
+        assert!(!report.region_filtered);
     }
 }
