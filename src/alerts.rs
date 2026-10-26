@@ -861,11 +861,12 @@ fn entry_emma_id(entry: &MeteoAlarmEntry) -> Option<&str> {
 /// Lives in its own function so it can be unit-tested against fixtures without a live network.
 ///
 /// Two stages. Stage 1: a resolved EMMA_ID filters a feed that tags its
-/// entries with EMMA_IDs; this is exact and, since the feed only lists regions
-/// that are alerting, it is the only stage that can tell a quiet day from a
-/// miss. Stage 2, when stage 1 has no usable filter: the user's place names
-/// are matched against the feed's own `areaDesc` values. A hit filters to that
-/// area; a miss keeps the national feed and says so. Stage 3, in
+/// entries with EMMA_IDs; an entry without one is kept only when its area is
+/// the one stage 2's place-name match picks. The EMMA_ID match is exact and, since the feed
+/// only lists regions that are alerting, it is the only stage that can tell a
+/// quiet day from a miss. Stage 2, when stage 1 has no usable filter: the user's
+/// place names are matched against the feed's own `areaDesc` values. A hit filters
+/// to that area; a miss keeps the national feed and says so. Stage 3, in
 /// `fetch_meteoalarm_alerts`, retries a stage-2 miss for non-Latin place
 /// names against the feed's local-language names (`apply_local_area_match`).
 fn meteoalarm_alerts_from_feed(
@@ -887,27 +888,46 @@ fn meteoalarm_alerts_from_feed(
         .iter()
         .any(|entry| entry_emma_id(entry).is_some());
 
+    // Both stages macth place names against the feed's own area names.
+    let mut area_names: Vec<String> = feed
+        .entries
+        .iter()
+        .filter_map(|entry| entry.cap_area_desc.clone())
+        .filter(|name| !name.is_empty())
+        .collect();
+    area_names.sort_unstable();
+    area_names.dedup();
+
     // Stage 1: EMMA_ID against an EMMA_ID-tagged feed.
     if let Some(user_id) = user_emma_id {
         if feed_has_emma_ids {
-            let untagged = feed
-                .entries
-                .iter()
-                .filter(|entry| entry_emma_id(entry).is_none())
-                .count();
-            if untagged > 0 {
-                tracing::debug!(
-                    "Dropped {} untagged MeteoAlarm entr(y/ies) while filtering to {}",
-                    untagged,
-                    user_id
-                );
-            }
-            let filter = Some(user_id.clone());
+            // An entry without an EMMA_ID is kept when its area is the one the
+            // place names pick, as stage 2 would; France's coastal entries
+            // name their département only this way.
+            let named_area = match_area(search_terms, &area_names);
+            let mut dropped = 0;
             let alerts: Vec<AlertEntry> = feed
                 .entries
                 .into_iter()
-                .filter_map(|entry| parse_meteoalarm_entry(entry, &filter))
+                .filter(|entry| match entry_emma_id(entry) {
+                    Some(entry_id) => entry_id == user_id,
+                    None => {
+                        let keep = named_area.is_some() && entry.cap_area_desc == named_area;
+                        if !keep {
+                            dropped += 1;
+                        }
+                        keep
+                    }
+                })
+                .filter_map(|entry| parse_meteoalarm_entry(entry, &None))
                 .collect();
+            if dropped > 0 {
+                tracing::debug!(
+                    "Dropped {} untagged MeteoAlarm entr(y/ies) while filtering to {}",
+                    dropped,
+                    user_id
+                );
+            }
             tracing::debug!(
                 "Fetched {} alert(s) from MeteoAlarm ({}), filtered to {}",
                 alerts.len(),
@@ -935,16 +955,6 @@ fn meteoalarm_alerts_from_feed(
             schemes
         );
     }
-
-    // Stage 2: place names against the feed's own area names.
-    let mut area_names: Vec<String> = feed
-        .entries
-        .iter()
-        .filter_map(|entry| entry.cap_area_desc.clone())
-        .filter(|name| !name.is_empty())
-        .collect();
-    area_names.sort_unstable();
-    area_names.dedup();
 
     match match_area(search_terms, &area_names) {
         Some(area) => {
@@ -3405,6 +3415,54 @@ mod tests {
         );
 
         assert!(report.alerts.is_empty());
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn france_coastal_entry_kept_by_area_name() {
+        // Somme's coastal warning carries no EMMA_ID but names the
+        // département in its areaDesc, so it stays under the filter. Gironde's
+        // does not match the user's place names and is dropped.
+        let xml = format!(
+            "<feed>{}{}{}</feed>",
+            nuts3_entry("fr-1", "FR713", Some("FR031"), "Drôme"),
+            nuts3_entry("fr-2", "FRE23", None, "Somme"),
+            nuts3_entry("fr-3", "FRI12", None, "Gironde")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("FR080".to_string()),
+            &strings(&["Somme"]),
+            "France",
+        );
+
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(report.alerts[0].area_desc, "Somme");
+        assert!(report.region_filtered);
+    }
+
+    #[test]
+    fn ambiguous_area_name_keeps_no_untagged_entry() {
+        // "Seine" fits three départements, so it picks no area and the
+        // untagged Seine-Maritime entry is dropped; matched against the
+        // untagged names alone it would have been kept.
+        let xml = format!(
+            "<feed>{}{}{}</feed>",
+            nuts3_entry("fr-1", "FR102", Some("FR077"), "Seine-et-Marne"),
+            nuts3_entry("fr-2", "FR106", Some("FR093"), "Seine-Saint-Denis"),
+            nuts3_entry("fr-3", "FRD22", None, "Seine-Maritime")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let report = meteoalarm_alerts_from_feed(
+            feed,
+            &Some("FR077".to_string()),
+            &strings(&["Seine"]),
+            "France",
+        );
+
+        assert_eq!(report.alerts.len(), 1);
+        assert_eq!(report.alerts[0].area_desc, "Seine-et-Marne");
         assert!(report.region_filtered);
     }
 
