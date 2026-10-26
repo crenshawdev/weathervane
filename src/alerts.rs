@@ -452,7 +452,16 @@ fn local_areas_from_json(feed: MeteoAlarmJsonFeed) -> Vec<LocalArea> {
 
 /// Place names to try, most specific first.
 fn emma_search_terms(address: &NominatimAddress) -> Vec<String> {
+    let (mut terms, areas) = emma_search_terms_by_level(address);
+    terms.extend(areas);
+    terms
+}
+
+/// The same terms in two lists: the place itself (city, town, village,
+/// municipality), then the areas it sits in (county, state).
+fn emma_search_terms_by_level(address: &NominatimAddress) -> (Vec<String>, Vec<String>) {
     let mut terms: Vec<String> = Vec::new();
+    let mut areas: Vec<String> = Vec::new();
 
     if let Some(city) = &address.city {
         terms.push(city.clone());
@@ -468,14 +477,14 @@ fn emma_search_terms(address: &NominatimAddress) -> Vec<String> {
         terms.push(municipality.clone());
     }
     if let Some(county) = &address.county {
-        terms.push(county.clone());
-        terms.push(format!("Kreis {}", county));
+        areas.push(county.clone());
+        areas.push(format!("Kreis {}", county));
     }
     if let Some(state) = &address.state {
-        terms.push(state.clone());
+        areas.push(state.clone());
     }
 
-    terms
+    (terms, areas)
 }
 
 /// The matching itself, split from the fetch so it is testable without a network.
@@ -485,11 +494,14 @@ fn match_emma_id(
     codenames: &MeteoAlarmCodenames,
 ) -> Option<String> {
     let country_prefix = country_code.to_uppercase();
-    let search_terms = emma_search_terms(address);
+    let (place_terms, area_terms) = emma_search_terms_by_level(address);
+    let search_terms = place_terms
+        .iter()
+        .map(|term| (term, false))
+        .chain(area_terms.iter().map(|term| (term, true)));
+    let term_count = place_terms.len() + area_terms.len();
 
-    for search_term in &search_terms {
-        let search_lower = search_term.to_lowercase();
-
+    for (search_term, area_term) in search_terms {
         // Rank every candidate rather than taking the first hit. `codes` is a
         // HashMap, so "first hit" means whichever one iteration happened to
         // reach, and Vienna's "Wien" matches 26 Austrian codenames.
@@ -498,7 +510,7 @@ fn match_emma_id(
             .iter()
             .filter(|(emma_id, _)| emma_id.starts_with(&country_prefix))
             .filter_map(|(emma_id, name)| {
-                rank_emma_match(&search_lower, &name.to_lowercase()).map(|rank| (rank, emma_id))
+                rank_emma_match(search_term, name, area_term).map(|rank| (rank, emma_id))
             })
             // Equal ranks fall back to the EMMA_ID, which is unique, so the
             // winner is total and identical on every run. Reversed because the
@@ -516,7 +528,7 @@ fn match_emma_id(
     // Counts only: warn is on by default, and the terms are the user's place names.
     tracing::warn!(
         "No EMMA_ID matched {} place name(s) in {}; will try the feed's own area names",
-        search_terms.len(),
+        term_count,
         country_prefix
     );
     None
@@ -526,37 +538,56 @@ fn match_emma_id(
 /// picks the strongest fit.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum EmmaMatch {
-    /// The codename is the longer string, as "Wiener Neustadt" is for a search
+    /// The codename is the longer name, as "Wien Innere Stadt" is for a search
     /// of "Wien". The weakest kind of hit, and the shorter codename is the
     /// closer one, hence the `Reverse`.
     CodenameContainsTerm(std::cmp::Reverse<usize>),
-    /// The search term is the longer string, as "Warsaw County" is for a
+    /// The search term is the longer name, as "Warsaw County" is for a
     /// codename of "Warsaw". A real hit on a coarser region, and here the
     /// longer codename is the more specific one.
     TermContainsCodename(usize),
-    /// Same name on both sides.
+    /// Same words on both sides, so "Maine-et-Loire" is "Maine et Loire".
     Exact,
 }
 
-/// Returns None when the two do not relate at all. Empty strings never match,
-/// since `contains("")` is true for everything and would hand back an arbitrary
-/// region for a location Nominatim gave a blank name.
-fn rank_emma_match(search_lower: &str, name_lower: &str) -> Option<EmmaMatch> {
-    if search_lower.is_empty() || name_lower.is_empty() {
+/// Returns None when the two do not relate at all. Names are compared as runs
+/// of whole words, never substrings: "Angers" holds "gers" but is not in Gers.
+/// Only an area term (county, state) may hold a codename: a town is often
+/// named for the river a département is named for, so "Saint-Laurent-du-Var"
+/// holding "Var" says nothing about where it is. A name with no words never
+/// matches, so a blank name from Nominatim cannot pick an arbitrary region.
+fn rank_emma_match(search_term: &str, name: &str, area_term: bool) -> Option<EmmaMatch> {
+    let term_words = emma_words(search_term);
+    let name_words = emma_words(name);
+    if term_words.is_empty() || name_words.is_empty() {
         return None;
     }
 
-    if name_lower == search_lower {
+    if term_words == name_words {
         Some(EmmaMatch::Exact)
-    } else if search_lower.contains(name_lower) {
-        Some(EmmaMatch::TermContainsCodename(name_lower.len()))
-    } else if name_lower.contains(search_lower) {
+    } else if area_term && holds_words(&term_words, &name_words) {
+        Some(EmmaMatch::TermContainsCodename(name.len()))
+    } else if holds_words(&name_words, &term_words) {
         Some(EmmaMatch::CodenameContainsTerm(std::cmp::Reverse(
-            name_lower.len(),
+            name.len(),
         )))
     } else {
         None
     }
+}
+
+/// A name's lowercase words, split at anything that is not a letter or digit.
+fn emma_words(name: &str) -> Vec<String> {
+    name.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether `inner` appears in `outer` as a run of whole words.
+fn holds_words(outer: &[String], inner: &[String]) -> bool {
+    outer.windows(inner.len()).any(|window| window == inner)
 }
 
 /// Administrative words that name a level, not a place. Dropped from both
@@ -2811,6 +2842,77 @@ mod tests {
         assert_eq!(
             match_emma_id(&address(None, Some("Warsaw County"), None), "PL", &codes),
             Some("PL1465".to_string())
+        );
+    }
+
+    /// French départements as the pinned codename list spells them: words
+    /// split by spaces, where Nominatim joins them with hyphens.
+    fn french_codenames() -> MeteoAlarmCodenames {
+        codenames(&[
+            ("FR005", "Gers"),
+            ("FR012", "Lot et Garonne"),
+            ("FR013", "Lot"),
+            ("FR028", "Var"),
+            ("FR029", "Alpes Maritimes"),
+            ("FR037", "Loire"),
+            ("FR039", "Ain"),
+            ("FR092", "Maine et Loire"),
+        ])
+    }
+
+    #[test]
+    fn match_emma_id_never_matches_inside_a_word() {
+        // "Angers" holds "gers" and "Saint-Étienne" holds "ain", but neither
+        // is in Gers or Ain; the county names the right département.
+        let codes = french_codenames();
+        assert_eq!(
+            match_emma_id(
+                &address(Some("Angers"), Some("Maine-et-Loire"), None),
+                "FR",
+                &codes
+            ),
+            Some("FR092".to_string())
+        );
+        assert_eq!(
+            match_emma_id(
+                &address(Some("Saint-Étienne"), Some("Loire"), None),
+                "FR",
+                &codes
+            ),
+            Some("FR037".to_string())
+        );
+    }
+
+    #[test]
+    fn match_emma_id_does_not_place_a_town_by_its_river() {
+        // Saint-Laurent-du-Var is in Alpes-Maritimes and Villeneuve-sur-Lot in
+        // Lot-et-Garonne; the Var and the Lot are rivers the town names hold.
+        let codes = french_codenames();
+        assert_eq!(
+            match_emma_id(
+                &address(Some("Saint-Laurent-du-Var"), Some("Alpes-Maritimes"), None),
+                "FR",
+                &codes
+            ),
+            Some("FR029".to_string())
+        );
+        assert_eq!(
+            match_emma_id(
+                &address(Some("Villeneuve-sur-Lot"), Some("Lot-et-Garonne"), None),
+                "FR",
+                &codes
+            ),
+            Some("FR012".to_string())
+        );
+    }
+
+    #[test]
+    fn match_emma_id_reads_hyphens_and_spaces_alike() {
+        // Nominatim's "Maine-et-Loire" against the list's "Maine et Loire".
+        let codes = french_codenames();
+        assert_eq!(
+            match_emma_id(&address(None, Some("Maine-et-Loire"), None), "FR", &codes),
+            Some("FR092".to_string())
         );
     }
 
