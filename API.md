@@ -197,7 +197,8 @@ Each `Alert` has:
 - `severity: AlertSeverity` -- `Minor`, `Moderate`, `Severe`, `Extreme`, or `Unknown`
 - `headline: String` -- short summary
 - `description: String` -- full text (empty for MeteoAlarm and BOM, which don't provide it)
-- `expires: DateTime<Utc>` -- when the alert expires
+- `expires: DateTime<Utc>` -- when the alert expires; for NWS when the event ends (`ends`),
+  falling back to the message's `expires` when NWS gives no end
 
 Expired alerts are filtered out before returning. ECCC alerts are read from
 yesterday's and today's files, and for each alert and area only the latest

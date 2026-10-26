@@ -134,6 +134,7 @@ struct NwsAlertProperties {
     description: Option<String>,
     sent: String,
     expires: Option<String>,
+    ends: Option<String>,
     #[serde(rename = "areaDesc")]
     area_desc: Option<String>,
 }
@@ -189,7 +190,16 @@ fn nws_alerts_from_response(data: NwsAlertsResponse) -> Vec<AlertEntry> {
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|| sent + chrono::Duration::hours(24));
 
-            if expires < Utc::now() {
+            // `expires` is when this message lapses and NWS reissues it; `ends`
+            // is when the event itself ends, and is null when it has no set end.
+            let ends = props
+                .ends
+                .as_ref()
+                .and_then(|e| DateTime::parse_from_rfc3339(e).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+
+            let now = Utc::now();
+            if expires < now || ends.is_some_and(|ends| ends < now) {
                 return None;
             }
 
@@ -204,7 +214,7 @@ fn nws_alerts_from_response(data: NwsAlertsResponse) -> Vec<AlertEntry> {
                         .unwrap_or(AlertSeverity::Unknown),
                     headline: props.headline.unwrap_or_default(),
                     description: props.description.unwrap_or_default(),
-                    expires,
+                    expires: ends.unwrap_or(expires),
                 },
                 area_desc: props.area_desc.unwrap_or_default(),
             })
@@ -1835,6 +1845,71 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].alert.headline, "");
         assert_eq!(alerts[0].alert.description, "");
+    }
+
+    #[test]
+    fn nws_expires_reads_event_end_over_message_expiry() {
+        // A multi-day warning: the message lapses at the next reissue, the
+        // event two days later. The headline names the event's end.
+        let json = r#"{"features":[{"properties":{
+            "id":"NWS-IDP-PROD-128",
+            "event":"Flood Warning",
+            "severity":"Moderate",
+            "headline":"Flood Warning issued until September 6 at 11:36AM CDT",
+            "description":"Details.",
+            "sent":"2099-09-04T11:26:00-05:00",
+            "expires":"2099-09-04T23:30:00-05:00",
+            "ends":"2099-09-06T11:36:00-05:00"
+        }}]}"#;
+        let data: NwsAlertsResponse = serde_json::from_str(json).unwrap();
+        let alerts = nws_alerts_from_response(data);
+
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(
+            alerts[0].alert.expires,
+            "2099-09-06T16:36:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
+    }
+
+    #[test]
+    fn nws_null_ends_keeps_message_expiry() {
+        let json = r#"{"features":[{"properties":{
+            "id":"NWS-IDP-PROD-129",
+            "event":"Special Weather Statement",
+            "severity":"Moderate",
+            "headline":"Special Weather Statement",
+            "description":"Details.",
+            "sent":"2099-01-01T00:00:00Z",
+            "expires":"2099-01-01T06:00:00Z",
+            "ends":null
+        }}]}"#;
+        let data: NwsAlertsResponse = serde_json::from_str(json).unwrap();
+        let alerts = nws_alerts_from_response(data);
+
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(
+            alerts[0].alert.expires,
+            "2099-01-01T06:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
+    }
+
+    #[test]
+    fn nws_drops_alert_whose_event_has_ended() {
+        // The message is still current, but the event it describes is over.
+        let json = r#"{"features":[{"properties":{
+            "id":"NWS-IDP-PROD-130",
+            "event":"Flood Warning",
+            "severity":"Moderate",
+            "headline":"Flood Warning",
+            "description":"Details.",
+            "sent":"2026-06-01T12:00:00Z",
+            "expires":"2099-01-01T00:00:00Z",
+            "ends":"2020-01-01T00:00:00Z"
+        }}]}"#;
+        let data: NwsAlertsResponse = serde_json::from_str(json).unwrap();
+        let alerts = nws_alerts_from_response(data);
+
+        assert!(alerts.is_empty());
     }
 
     // -----------------------------------------------------------------
