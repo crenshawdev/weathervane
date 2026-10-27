@@ -1,4 +1,5 @@
 /target
+tools/cache/
 Cargo.lock
 coverage.xml
 .idea/

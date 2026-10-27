@@ -416,12 +416,14 @@ timeout) are preserved on rebuild.
 pub fn detect_region(lat: f64, lon: f64) -> Region
 ```
 
-Returns `Region::Us`, `Region::Europe`, `Region::Canada`, `Region::Australia`, or
-`Region::Unknown` based on bounding boxes. Used internally for alert provider
-selection and AQI standard, but public if you need it.
+Returns `Region::Us`, `Region::Europe`, `Region::Canada`, `Region::Australia`,
+or `Region::Unknown`. Used internally for alert provider selection and AQI
+standard, but public if you need it.
 
-The US bounding boxes respect the US-Canada border with regional specificity
-(different lat cutoffs for the Pacific Northwest vs Great Lakes vs Northeast).
+`Region::Us` follows the US outline (the 50 states, DC, Puerto Rico, the
+US Virgin Islands, Guam, the Northern Mariana Islands and American Samoa)
+with the Canadian and Mexican borders at about 500 m, so a border city
+is routed to its own country. The other regions are bounding boxes.
 
 ## Errors
 
