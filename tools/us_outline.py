@@ -31,7 +31,7 @@ bounding box are dropped here; so are uninhabited islets, by the KEEP list.
 
 Run:  uv run tools/us_outline.py  (or: pip install pyshp shapely; python3 tools/us_outline.py)
 """
-import io, os, sys, urllib.request, zipfile
+import http.client, io, os, sys, zipfile
 import shapefile
 from shapely.geometry import shape, Point, box
 from shapely.ops import unary_union
@@ -65,7 +65,14 @@ def fetch(url):
     path = os.path.join(CACHE, url.rsplit("/", 1)[1])
     if not os.path.exists(path):
         print("downloading", url, file=sys.stderr)
-        urllib.request.urlretrieve(url, path)
+        host, _, resource = url.removeprefix("https://").partition("/")
+        conn = http.client.HTTPSConnection(host)
+        conn.request("GET", "/" + resource)
+        response = conn.getresponse()
+        if response.status != 200:
+            sys.exit(f"{url}: HTTP {response.status}")
+        with open(path, "wb") as f:
+            f.write(response.read())
     z = zipfile.ZipFile(path)
     name = next(n for n in z.namelist() if n.endswith(".shp"))[:-4]
     return shapefile.Reader(shp=io.BytesIO(z.read(name + ".shp")), dbf=io.BytesIO(z.read(name + ".dbf")))
