@@ -109,6 +109,22 @@ pub async fn fetch_alerts(latitude: f64, longitude: f64) -> Result<Vec<Alert>> {
     Ok(report.alerts.into_iter().map(|entry| entry.alert).collect())
 }
 
+/// A provider answering with a non-2xx status is an error, never an empty
+/// list: a 503 during a tornado warning must not read as a quiet day. The
+/// `warn!` stays because consumers do swallow errors.
+fn provider_response(response: reqwest::Response, provider: &str) -> Result<reqwest::Response> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    tracing::warn!(
+        "{} returned status {}; alerts unavailable",
+        provider,
+        status
+    );
+    Err(Error::HttpStatus(status.as_u16()))
+}
+
 // ---------------------------------------------------------------------------
 // NWS (United States)
 // ---------------------------------------------------------------------------
@@ -146,23 +162,7 @@ async fn fetch_nws_alerts(latitude: f64, longitude: f64) -> Result<AlertReport> 
         latitude, longitude
     );
 
-    let response = http_client()?
-        .get(&url)
-        .header("Accept", "application/geo+json")
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        tracing::warn!("NWS API returned status: {}", response.status());
-        return Ok(AlertReport {
-            alerts: vec![],
-            region_filtered: true,
-        });
-    }
-
-    let data: NwsAlertsResponse = response.json().await?;
-
-    let alerts = nws_alerts_from_response(data);
+    let alerts = nws_alerts_from_response(fetch_nws_response(&url).await?);
 
     tracing::debug!("Fetched {} alert(s) from NWS", alerts.len());
     // The point query already narrowed the list to the caller's location.
@@ -170,6 +170,16 @@ async fn fetch_nws_alerts(latitude: f64, longitude: f64) -> Result<AlertReport> 
         alerts,
         region_filtered: true,
     })
+}
+
+/// The request and decode, split out so a mock server can stand in for NWS.
+async fn fetch_nws_response(url: &str) -> Result<NwsAlertsResponse> {
+    let response = http_client()?
+        .get(url)
+        .header("Accept", "application/geo+json")
+        .send()
+        .await?;
+    Ok(provider_response(response, "NWS API")?.json().await?)
 }
 
 /// Lives in its own function so it can be unit-tested against fixtures without a live network.
@@ -1019,17 +1029,7 @@ async fn fetch_meteoalarm_alerts(latitude: f64, longitude: f64) -> Result<AlertR
         slug
     );
 
-    let response = http_client()?.get(&url).send().await?;
-    if !response.status().is_success() {
-        tracing::warn!("MeteoAlarm returned status: {}", response.status());
-        return Ok(AlertReport {
-            alerts: vec![],
-            region_filtered: user_emma_id.is_some(),
-        });
-    }
-
-    let xml_text = response.text().await?;
-    let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml_text)?;
+    let feed = fetch_meteoalarm_feed(&url).await?;
 
     let search_terms = emma_search_terms(&address);
     let report = meteoalarm_alerts_from_feed(feed, &user_emma_id, &search_terms, country);
@@ -1048,6 +1048,14 @@ async fn fetch_meteoalarm_alerts(latitude: f64, longitude: f64) -> Result<AlertR
         &local_areas,
         country,
     ))
+}
+
+/// The request and decode, split out so a mock server can stand in for the
+/// feed.
+async fn fetch_meteoalarm_feed(url: &str) -> Result<MeteoAlarmFeed> {
+    let response = http_client()?.get(url).send().await?;
+    let xml_text = provider_response(response, "MeteoAlarm")?.text().await?;
+    Ok(quick_xml::de::from_str(&xml_text)?)
 }
 
 /// The entry's EMMA_ID, from `cap:geocode` when it is tagged as one, otherwise
@@ -1466,8 +1474,6 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<AlertReport>
     let yesterday = (now - chrono::Duration::days(1))
         .format("%Y%m%d")
         .to_string();
-    let client = http_client()?;
-
     let mut dir_urls: Vec<String> = Vec::new();
     for office in offices {
         dir_urls.push(format!(
@@ -1478,17 +1484,48 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<AlertReport>
         ));
     }
 
+    let versions = fetch_eccc_versions(&dir_urls, latitude, longitude, now).await?;
+    let alerts = latest_eccc_alerts(versions, now);
+    tracing::debug!("Fetched {} alert(s) from ECCC", alerts.len());
+
+    // Every entry passed the polygon check for the caller's point.
+    Ok(AlertReport {
+        alerts,
+        region_filtered: true,
+    })
+}
+
+/// Walks the office directories, their hour directories and their CAP files,
+/// and returns every version whose area holds the point.
+///
+/// Partial failure: a request that fails part-way leaves what the others
+/// read, and a directory that is not there (404) is an office that issued
+/// nothing that day, which is the normal case. Only when nothing at all could
+/// be read and some request failed (a transport error, or any status other
+/// than 404) is the walk an `Err`, so an outage cannot read as a quiet day.
+async fn fetch_eccc_versions(
+    dir_urls: &[String],
+    latitude: f64,
+    longitude: f64,
+    now: DateTime<Utc>,
+) -> Result<Vec<EcccVersion>> {
+    let client = http_client()?;
     let mut versions: Vec<EcccVersion> = Vec::new();
+    let mut files_read = 0usize;
+    let mut failure: Option<Error> = None;
 
     for dir_url in dir_urls {
-        let dir_response = match client.get(&dir_url).send().await {
-            Ok(resp) if resp.status().is_success() => resp,
-            _ => continue,
+        let Some(dir_response) = eccc_readable(client.get(dir_url).send().await, &mut failure)
+        else {
+            continue;
         };
 
         let dir_html = match dir_response.text().await {
             Ok(text) => text,
-            Err(_) => continue,
+            Err(e) => {
+                failure.get_or_insert(e.into());
+                continue;
+            }
         };
 
         // Parse hour directories from HTML listing
@@ -1513,14 +1550,18 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<AlertReport>
         for hour in hour_dirs {
             let hour_url = format!("{}{}/", dir_url, hour);
 
-            let hour_response = match client.get(&hour_url).send().await {
-                Ok(resp) if resp.status().is_success() => resp,
-                _ => continue,
+            let Some(hour_response) =
+                eccc_readable(client.get(&hour_url).send().await, &mut failure)
+            else {
+                continue;
             };
 
             let hour_html = match hour_response.text().await {
                 Ok(text) => text,
-                Err(_) => continue,
+                Err(e) => {
+                    failure.get_or_insert(e.into());
+                    continue;
+                }
             };
 
             let cap_files: Vec<String> = hour_html
@@ -1541,9 +1582,10 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<AlertReport>
             for cap_file in cap_files {
                 let cap_url = format!("{}{}", hour_url, cap_file);
 
-                let cap_response = match client.get(&cap_url).send().await {
-                    Ok(resp) if resp.status().is_success() => resp,
-                    _ => continue,
+                let Some(cap_response) =
+                    eccc_readable(client.get(&cap_url).send().await, &mut failure)
+                else {
+                    continue;
                 };
 
                 let date = cap_response
@@ -1554,9 +1596,13 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<AlertReport>
 
                 let cap_xml = match cap_response.text().await {
                     Ok(text) => text,
-                    Err(_) => continue,
+                    Err(e) => {
+                        failure.get_or_insert(e.into());
+                        continue;
+                    }
                 };
 
+                files_read += 1;
                 versions.extend(parse_eccc_cap(
                     &cap_xml, latitude, longitude, now, sent_limit,
                 ));
@@ -1564,14 +1610,36 @@ async fn fetch_eccc_alerts(latitude: f64, longitude: f64) -> Result<AlertReport>
         }
     }
 
-    let alerts = latest_eccc_alerts(versions, now);
-    tracing::debug!("Fetched {} alert(s) from ECCC", alerts.len());
+    match failure {
+        Some(e) if files_read == 0 => {
+            tracing::warn!("ECCC returned no readable file ({}); alerts unavailable", e);
+            Err(e)
+        }
+        _ => Ok(versions),
+    }
+}
 
-    // Every entry passed the polygon check for the caller's point.
-    Ok(AlertReport {
-        alerts,
-        region_filtered: true,
-    })
+/// The response when it is 2xx, else None. A 404 is a directory or file that
+/// is not there, which is normal; any other failure is kept in `failure` (the
+/// first one wins) for the caller to report if nothing could be read.
+fn eccc_readable(
+    result: std::result::Result<reqwest::Response, reqwest::Error>,
+    failure: &mut Option<Error>,
+) -> Option<reqwest::Response> {
+    match result {
+        Ok(response) if response.status().is_success() => Some(response),
+        Ok(response) => {
+            let status = response.status();
+            if status != reqwest::StatusCode::NOT_FOUND {
+                failure.get_or_insert(Error::HttpStatus(status.as_u16()));
+            }
+            None
+        }
+        Err(e) => {
+            failure.get_or_insert(e.into());
+            None
+        }
+    }
 }
 
 /// How far past the server's time a `sent` may be before it isn't trusted
@@ -1758,24 +1826,19 @@ async fn fetch_bom_alerts(latitude: f64, longitude: f64) -> Result<AlertReport> 
         geohash
     );
 
-    let response = http_client()?.get(&url).send().await?;
-
-    if !response.status().is_success() {
-        return Ok(AlertReport {
-            alerts: vec![],
-            region_filtered: true,
-        });
-    }
-
-    let response_body: BomWarningsResponse = response.json().await?;
-
-    let alerts = bom_alerts_from_response(response_body.data);
+    let alerts = bom_alerts_from_response(fetch_bom_response(&url).await?.data);
 
     // The geohash lookup already narrowed the list to the caller's location.
     Ok(AlertReport {
         alerts,
         region_filtered: true,
     })
+}
+
+/// The request and decode, split out so a mock server can stand in for BOM.
+async fn fetch_bom_response(url: &str) -> Result<BomWarningsResponse> {
+    let response = http_client()?.get(url).send().await?;
+    Ok(provider_response(response, "BOM API")?.json().await?)
 }
 
 /// Lives in its own function so it can be unit-tested against fixtures without a live network.
@@ -2444,6 +2507,159 @@ mod tests {
     /// the user sees.
     fn eccc_alerts_at(files: &[String], now: DateTime<Utc>) -> Vec<AlertEntry> {
         eccc_alerts_with_server_time(files, now, now)
+    }
+
+    // A provider's bad status, or an outage, is an error and never an empty
+    // list. Each provider's request-and-decode step runs against a mock
+    // server; port 1 is reserved and refuses at once, for the no-connection
+    // case.
+
+    use crate::NetworkKind;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn server_answering(status: u16, body: &str) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn nws_bad_status_is_an_error_not_a_quiet_day() {
+        let server = server_answering(503, "").await;
+        let result = fetch_nws_response(&server.uri()).await;
+        assert!(matches!(result, Err(Error::HttpStatus(503))), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn nws_ok_status_decodes_the_body() {
+        let server = server_answering(200, r#"{"features":[]}"#).await;
+        let data = fetch_nws_response(&server.uri()).await.unwrap();
+        assert!(data.features.is_empty());
+    }
+
+    #[tokio::test]
+    async fn meteoalarm_bad_status_is_an_error_not_a_quiet_day() {
+        // The shape of a wrong feed slug, which used to read as "no alerts".
+        let server = server_answering(404, "").await;
+        let result = fetch_meteoalarm_feed(&server.uri()).await;
+        assert!(matches!(result, Err(Error::HttpStatus(404))), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn meteoalarm_ok_status_decodes_the_feed() {
+        let server =
+            server_answering(200, r#"<feed xmlns="http://www.w3.org/2005/Atom"></feed>"#).await;
+        let feed = fetch_meteoalarm_feed(&server.uri()).await.unwrap();
+        assert!(feed.entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bom_bad_status_is_an_error_not_a_quiet_day() {
+        let server = server_answering(500, "").await;
+        let result = fetch_bom_response(&server.uri()).await;
+        assert!(matches!(result, Err(Error::HttpStatus(500))), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn bom_ok_status_decodes_the_body() {
+        let server = server_answering(200, r#"{"data":[]}"#).await;
+        let body = fetch_bom_response(&server.uri()).await.unwrap();
+        assert!(body.data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn provider_connection_failure_is_an_error() {
+        let result = fetch_bom_response("http://127.0.0.1:1/warnings").await;
+        assert!(
+            matches!(result, Err(Error::Network(NetworkKind::Connect))),
+            "{result:?}"
+        );
+    }
+
+    /// Directory listings in the shape `dd.weather.gc.ca` serves: an hour
+    /// directory is `href="HH/"`, a file is `href="<name>.cap"`.
+    const ECCC_DIR_LISTING: &str = r#"<a href="/today/alerts/cap/">Parent Directory</a>
+<a href="05/">05/</a>"#;
+    const ECCC_HOUR_LISTING: &str = r#"<a href="a1.cap">a1.cap</a>"#;
+
+    fn eccc_active_file() -> String {
+        eccc_file(
+            "a1",
+            "Alert",
+            "2026-10-13T12:00:00-00:00",
+            &[wind("active", "2026-10-14T04:00:00-00:00")],
+        )
+    }
+
+    async fn eccc_office(server: &MockServer, dir: &str, status: u16, body: &str) {
+        Mock::given(method("GET"))
+            .and(path(dir))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .mount(server)
+            .await;
+    }
+
+    async fn eccc_walk(server: &MockServer, dirs: &[&str]) -> Result<Vec<EcccVersion>> {
+        let urls: Vec<String> = dirs
+            .iter()
+            .map(|d| format!("{}{d}", server.uri()))
+            .collect();
+        fetch_eccc_versions(&urls, 5.0, 5.0, eccc_now()).await
+    }
+
+    #[tokio::test]
+    async fn eccc_missing_directories_are_a_quiet_day() {
+        // No route mounted: every directory is 404, the normal case for an
+        // office that issued nothing that day.
+        let server = MockServer::start().await;
+        let versions = eccc_walk(&server, &["/yesterday/CWTO/", "/today/CWTO/"])
+            .await
+            .unwrap();
+        assert!(versions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn eccc_every_directory_failing_is_an_error() {
+        let server = server_answering(503, "").await;
+        let result = eccc_walk(&server, &["/yesterday/CWTO/", "/today/CWTO/"]).await;
+        assert!(matches!(result, Err(Error::HttpStatus(503))), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn eccc_one_readable_directory_keeps_what_it_read() {
+        let server = MockServer::start().await;
+        eccc_office(&server, "/today/CWTO/", 200, ECCC_DIR_LISTING).await;
+        eccc_office(&server, "/today/CWTO/05/", 200, ECCC_HOUR_LISTING).await;
+        eccc_office(&server, "/today/CWTO/05/a1.cap", 200, &eccc_active_file()).await;
+        eccc_office(&server, "/yesterday/CWTO/", 503, "").await;
+        let versions = eccc_walk(&server, &["/yesterday/CWTO/", "/today/CWTO/"])
+            .await
+            .unwrap();
+        assert_eq!(latest_eccc_alerts(versions, eccc_now()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn eccc_listing_without_a_readable_file_is_an_error() {
+        let server = MockServer::start().await;
+        eccc_office(&server, "/today/CWTO/", 200, ECCC_DIR_LISTING).await;
+        eccc_office(&server, "/today/CWTO/05/", 200, ECCC_HOUR_LISTING).await;
+        eccc_office(&server, "/today/CWTO/05/a1.cap", 503, "").await;
+        let result = eccc_walk(&server, &["/today/CWTO/"]).await;
+        assert!(matches!(result, Err(Error::HttpStatus(503))), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn eccc_connection_failure_is_an_error() {
+        let urls = vec!["http://127.0.0.1:1/today/CWTO/".to_string()];
+        let result = fetch_eccc_versions(&urls, 5.0, 5.0, eccc_now()).await;
+        assert!(
+            matches!(result, Err(Error::Network(NetworkKind::Connect))),
+            "{result:?}"
+        );
     }
 
     /// `now` is the user's clock; `server_now` is the `Date` the files came with.
