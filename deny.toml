@@ -1,6 +1,5 @@
-# weathervane's copy of the sentinel cargo-deny baseline
-# (.sentinel/mechanical/deny.toml). check.sh uses this file instead of the
-# baseline. The license list holds only what the dependency tree needs.
+# cargo-deny config for weathervane. The license list holds only what the
+# dependency tree needs.
 
 [advisories]
 # Vulnerability advisories always fail; cargo-deny no longer allows turning
