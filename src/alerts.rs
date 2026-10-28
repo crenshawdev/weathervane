@@ -558,10 +558,12 @@ fn match_emma_id(
 /// picks the strongest fit.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum EmmaMatch {
-    /// The codename is the longer name, as "Wien Innere Stadt" is for a search
-    /// of "Wien". The weakest kind of hit, and the shorter codename is the
-    /// closer one, hence the `Reverse`.
-    CodenameContainsTerm(std::cmp::Reverse<usize>),
+    /// The codename is the longer name and a label word stands beside the term
+    /// in it, as "Linz (Stadt)" and "Linz (Land)" do for "Linz". The weakest
+    /// kind of hit. The label ranks first, since a city label names the place
+    /// itself and a district label the area around it; among equals the
+    /// shorter codename is the closer one, hence the `Reverse`.
+    CodenameContainsTerm(Label, std::cmp::Reverse<usize>),
     /// The search term is the longer name, as "Warsaw County" is for a
     /// codename of "Warsaw". A real hit on a coarser region, and here the
     /// longer codename is the more specific one.
@@ -574,8 +576,10 @@ enum EmmaMatch {
 /// of whole words, never substrings: "Angers" holds "gers" but is not in Gers.
 /// Only an area term (county, state) may hold a codename: a town is often
 /// named for the river a département is named for, so "Saint-Laurent-du-Var"
-/// holding "Var" says nothing about where it is. A name with no words never
-/// matches, so a blank name from Nominatim cannot pick an arbitrary region.
+/// holding "Var" says nothing about where it is. A codename holds a term only
+/// as `codename_label` allows: "Sierra de Madrid" holds "Madrid" and is not
+/// Madrid. A name with no words never matches, so a blank name from Nominatim
+/// cannot pick an arbitrary region.
 fn rank_emma_match(search_term: &str, name: &str, area_term: bool) -> Option<EmmaMatch> {
     let term_words = emma_words(search_term);
     let name_words = emma_words(name);
@@ -587,12 +591,9 @@ fn rank_emma_match(search_term: &str, name: &str, area_term: bool) -> Option<Emm
         Some(EmmaMatch::Exact)
     } else if area_term && holds_words(&term_words, &name_words) {
         Some(EmmaMatch::TermContainsCodename(name.len()))
-    } else if holds_words(&name_words, &term_words) {
-        Some(EmmaMatch::CodenameContainsTerm(std::cmp::Reverse(
-            name.len(),
-        )))
     } else {
-        None
+        codename_label(name, &name_words, &term_words, area_term)
+            .map(|label| EmmaMatch::CodenameContainsTerm(label, std::cmp::Reverse(name.len())))
     }
 }
 
@@ -608,6 +609,150 @@ fn emma_words(name: &str) -> Vec<String> {
 /// Whether `inner` appears in `outer` as a run of whole words.
 fn holds_words(outer: &[String], inner: &[String]) -> bool {
     outer.windows(inner.len()).any(|window| window == inner)
+}
+
+/// What the word beside a place name says the codename is. Weakest first, so
+/// a city label outranks a district label when both hold the name: "Linz
+/// (Stadt)" over "Linz (Land)".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Label {
+    /// One of the places the zone is named for: "København og Nordsjælland",
+    /// "Brighton and Hove", "Bern-Mühleberg".
+    Joined,
+    /// The area around the place: "Linz (Land)", "County Dublin", "Kreis
+    /// Marburg-Biedenkopf".
+    District,
+    /// The place itself: "Linz (Stadt)", "Hl.m. Praha", "Hansestadt Rostock".
+    City,
+}
+
+/// Words that say what a codename is, lowercase as `emma_words` yields them.
+/// A place name found inside a longer codename counts only when the word
+/// right before or after it is one of these; any other neighbour makes it
+/// part of a different name ("Sierra de Madrid" is not Madrid, "Kreis Neu-Ulm"
+/// is not Ulm, "Friuli Venezia Giulia" is not Venezia), and the codename is a
+/// miss rather than a guess. Every word here occurs in the pinned codename
+/// list.
+const LABELS: &[(&str, Label)] = &[
+    ("stadt", Label::City),
+    ("hansestadt", Label::City),
+    ("bundesstadt", Label::City),
+    ("city", Label::City),
+    ("hl", Label::City),
+    ("m", Label::City),
+    ("mun", Label::City),
+    ("municipiul", Label::City),
+    ("pilsēta", Label::City),
+    ("land", Label::District),
+    ("kreis", Label::District),
+    ("umgebung", Label::District),
+    ("county", Label::District),
+    ("okolie", Label::District),
+    ("greater", Label::District),
+    ("council", Label::District),
+    ("region", Label::District),
+    ("regionalverband", Label::District),
+    ("städteregion", Label::District),
+    ("novads", Label::District),
+    ("apskritis", Label::District),
+];
+
+/// Words that join two place names into one zone name, so a name beside one
+/// is the zone's own: "København og Nordsjælland", "Brighton and Hove", "Ibiza
+/// y Formentera", "Ανατολική Στερεά &amp; Έυβοια" (the Greek feed spells its
+/// ampersand as the entity, which tokenises to "amp"). Used by both the
+/// codename match and the area-name match.
+const JOINING_WORDS: &[&str] = &[
+    "und", "og", "and", "y", "e", "et", "with", "samt", "και", "amp",
+];
+
+/// Words that name one part of a district. "Kreis Plön - Küste" and "Kreis
+/// Plön - Binnenland" both hold "Plön", and no place name says which part the
+/// user is in, so a codename carrying one of these never holds a name. The
+/// German words are the Kreis parts; "sør" and "aust" are Norway's
+/// "Sør-Trøndelag" and "Aust-Agder", whose "Nord" and "Vest" halves the German
+/// words already cover.
+const PART_WORDS: &[&str] = &[
+    "küste",
+    "binnenland",
+    "bergland",
+    "tiefland",
+    "nord",
+    "süd",
+    "ost",
+    "west",
+    "südost",
+    "insel",
+    "ostelbisches",
+    "westelbisches",
+    "sør",
+    "aust",
+];
+
+/// What a codename that holds the term is to it, or None when the codename
+/// names one part of a district, or holds the term only inside another name.
+fn codename_label(
+    name: &str,
+    name_words: &[String],
+    term_words: &[String],
+    area_term: bool,
+) -> Option<Label> {
+    if name_words
+        .iter()
+        .any(|word| PART_WORDS.contains(&word.as_str()))
+    {
+        return None;
+    }
+    // A place that is one whole dash-separated part of the codename is one of
+    // the places the zone is named for: "Bern" in "Bern-Mühleberg", "Lausanne"
+    // in "Lausanne - Lavaux". Not a county or state: "Vaud" is one part of
+    // "Gros-de-Vaud", which is a part of Vaud, not Vaud.
+    let named_for = (!area_term && is_dash_part(name, term_words)).then_some(Label::Joined);
+    label_beside(name_words, term_words).max(named_for)
+}
+
+/// Whether `term_words` is one whole part of `name` split at its dashes: at
+/// the spaced dash first ("La Chaux-de-Fonds - Le Locle" is two parts), then
+/// at every dash ("Bern-Mühleberg", "Bohuskusten+Göteborg").
+fn is_dash_part(name: &str, term_words: &[String]) -> bool {
+    let spaced: Vec<&str> = name
+        .split(" - ")
+        .flat_map(|part| part.split(" – "))
+        .collect();
+    let every: Vec<&str> = name.split(['-', '–', '+']).collect();
+    [spaced, every].iter().any(|parts| {
+        let parts: Vec<Vec<String>> = parts
+            .iter()
+            .map(|part| emma_words(part))
+            .filter(|words| !words.is_empty())
+            .collect();
+        parts.len() > 1 && parts.iter().any(|words| words == term_words)
+    })
+}
+
+/// The strongest label beside any run of `inner` in `outer`, or None when
+/// `inner` never appears there or appears only beside other words.
+fn label_beside(outer: &[String], inner: &[String]) -> Option<Label> {
+    outer
+        .windows(inner.len())
+        .enumerate()
+        .filter(|(_, window)| *window == inner)
+        .filter_map(|(start, _)| {
+            let before = start.checked_sub(1).map(|i| outer[i].as_str());
+            let after = outer.get(start + inner.len()).map(String::as_str);
+            [before, after]
+                .into_iter()
+                .flatten()
+                .filter_map(|word| {
+                    LABELS
+                        .iter()
+                        .find(|(label, _)| *label == word)
+                        .map(|(_, kind)| *kind)
+                        .or_else(|| JOINING_WORDS.contains(&word).then_some(Label::Joined))
+                })
+                .max()
+        })
+        .max()
 }
 
 /// Administrative words that name a level, not a place. Dropped from both
@@ -704,7 +849,8 @@ fn tokens_equal(a: &str, b: &str) -> bool {
 /// the strongest.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum AreaMatch {
-    /// Every significant token of the shorter name appears in the longer one.
+    /// Every token of the area's name appears in the longer place name, or the
+    /// place name sits beside a joining word in the longer area name.
     Tokens,
     /// Same tokens in the same order.
     Exact,
@@ -712,9 +858,13 @@ enum AreaMatch {
 
 /// Returns None when the two do not relate. No substring or prefix compare on
 /// Latin tokens: "seine" does not fit "seinemaritime"; non-Latin tokens get
-/// the `tokens_equal` inflection allowance. The shorter side must carry at
-/// least one token of three or more characters, so a stray "i" or "de"
-/// cannot anchor a match on its own.
+/// the `tokens_equal` inflection allowance. A county or state holding the
+/// area's name ("Comunidad de Madrid" against "Madrid") is in that area. An
+/// area name holding the place name with words left over is another place
+/// ("Sierra de Madrid" against "Madrid") and a miss, unless a joining word
+/// stands beside the name ("Ανατολική Στερεά &amp; Έυβοια" against "Ανατολική
+/// Στερεά"). The shorter side must carry at least one token of three or more
+/// characters, so a stray "i" or "de" cannot anchor a match on its own.
 fn rank_area_match(term_tokens: &[String], area_tokens: &[String]) -> Option<AreaMatch> {
     if term_tokens.is_empty() || area_tokens.is_empty() {
         return None;
@@ -732,16 +882,35 @@ fn rank_area_match(term_tokens: &[String], area_tokens: &[String]) -> Option<Are
     } else {
         (area_tokens, term_tokens)
     };
-    let anchored = shorter.iter().any(|t| t.chars().count() >= 3);
-    if anchored
-        && shorter
+    if !shorter.iter().any(|t| t.chars().count() >= 3) {
+        return None;
+    }
+    let fits = if shorter.len() == term_tokens.len() {
+        holds_joined(longer, shorter)
+    } else {
+        shorter
             .iter()
             .all(|t| longer.iter().any(|l| tokens_equal(t, l)))
-    {
-        Some(AreaMatch::Tokens)
-    } else {
-        None
-    }
+    };
+    fits.then_some(AreaMatch::Tokens)
+}
+
+/// Whether `inner` appears in `outer` as a run of tokens with a joining word
+/// right before or after it: "Brighton and Hove" holds "Brighton" this way,
+/// "Sierra de Madrid" does not hold "Madrid".
+fn holds_joined(outer: &[String], inner: &[String]) -> bool {
+    outer
+        .windows(inner.len())
+        .enumerate()
+        .filter(|(_, window)| window.iter().zip(inner).all(|(o, i)| tokens_equal(o, i)))
+        .any(|(start, _)| {
+            let before = start.checked_sub(1).map(|i| outer[i].as_str());
+            let after = outer.get(start + inner.len()).map(String::as_str);
+            [before, after]
+                .into_iter()
+                .flatten()
+                .any(|word| JOINING_WORDS.contains(&word))
+        })
 }
 
 /// The one area name the user's place names pick out of the feed, or None.
@@ -2999,14 +3168,14 @@ mod tests {
     fn match_emma_id_search_term_order_still_wins_over_rank() {
         // The city is checked before the state, so a weak city hit beats a
         // perfect state hit. Ranking is only a tie-break inside one term.
-        let codes = codenames(&[("PL1465", "Warszawa Centrum"), ("PL0100", "Masovian")]);
+        let codes = codenames(&[("AT401", "Linz (Stadt)"), ("AT007", "Oberösterreich")]);
         assert_eq!(
             match_emma_id(
-                &address(Some("Warszawa"), None, Some("Masovian")),
-                "PL",
+                &address(Some("Linz"), None, Some("Oberösterreich")),
+                "AT",
                 &codes
             ),
-            Some("PL1465".to_string())
+            Some("AT401".to_string())
         );
     }
 
@@ -3089,6 +3258,162 @@ mod tests {
         assert_eq!(
             match_emma_id(&address(None, Some("Maine-et-Loire"), None), "FR", &codes),
             Some("FR092".to_string())
+        );
+    }
+
+    #[test]
+    fn match_emma_id_prefers_the_city_label_over_the_district_label() {
+        // Austria names the city and the district around it alike; "(Land)"
+        // is one letter shorter and used to win on length.
+        let codes = codenames(&[
+            ("AT401", "Linz (Stadt)"),
+            ("AT410", "Linz (Land)"),
+            ("AT007", "Oberösterreich"),
+        ]);
+        assert_eq!(
+            match_emma_id(
+                &address(Some("Linz"), None, Some("Oberösterreich")),
+                "AT",
+                &codes
+            ),
+            Some("AT401".to_string())
+        );
+        // The district is right when it is the only zone holding the name.
+        let codes = codenames(&[
+            ("DE362", "Kreis Marburg-Biedenkopf"),
+            ("DE185", "Kreis Gießen"),
+        ]);
+        assert_eq!(
+            match_emma_id(&address(Some("Marburg"), None, None), "DE", &codes),
+            Some("DE362".to_string())
+        );
+    }
+
+    #[test]
+    fn match_emma_id_does_not_place_a_city_inside_another_name() {
+        // AEMET's zones are "<something> de <province>": "Sierra de Madrid"
+        // holds "Madrid", and the city is in "Metropolitana y Henares", whose
+        // name no place name reaches. A miss renders the national feed
+        // unfiltered; the old pick filtered a city warning to the mountains.
+        let codes = codenames(&[
+            ("ES218", "Sierra de Madrid"),
+            ("ES219", "Metropolitana y Henares"),
+            ("ES220", "Sur, Vegas y Oeste"),
+        ]);
+        assert_eq!(
+            match_emma_id(
+                &address(Some("Madrid"), None, Some("Comunidad de Madrid")),
+                "ES",
+                &codes
+            ),
+            None
+        );
+        // "Kreis Neu-Ulm" holds "Ulm" after the hyphen split; Neu-Ulm is the
+        // Bavarian town across the Danube. The combined zone names Ulm itself.
+        let codes = codenames(&[
+            ("DE348", "Kreis Neu-Ulm"),
+            ("DE074", "Alb-Donau-Kreis und Stadt Ulm"),
+        ]);
+        assert_eq!(
+            match_emma_id(&address(Some("Ulm"), None, None), "DE", &codes),
+            Some("DE074".to_string())
+        );
+        // "Friuli Venezia Giulia" holds "Venezia"; Venice is in Veneto, which
+        // the state names once the city term is a miss.
+        let codes = codenames(&[("IT020", "Friuli Venezia Giulia"), ("IT006", "Veneto")]);
+        assert_eq!(
+            match_emma_id(
+                &address(Some("Venezia"), Some("Venezia"), Some("Veneto")),
+                "IT",
+                &codes
+            ),
+            Some("IT006".to_string())
+        );
+    }
+
+    #[test]
+    fn match_emma_id_keeps_labelled_zones() {
+        // Combined district-and-city zones, a city label with the county's
+        // name in front, a capital with its abbreviation, a county.
+        for (id, name, city) in [
+            (
+                "DE110",
+                "Rhein-Neckar-Kreis und Stadt Heidelberg",
+                "Heidelberg",
+            ),
+            ("DE056", "Kreis und Stadt München", "München"),
+            ("DE234", "Hansestadt Rostock", "Rostock"),
+            ("CZ014", "Hl.m. Praha", "Praha"),
+            ("IE012", "County Dublin", "Dublin"),
+            ("UK258", "Greater London", "London"),
+        ] {
+            let codes = codenames(&[(id, name)]);
+            assert_eq!(
+                match_emma_id(&address(Some(city), None, None), &id[..2], &codes),
+                Some(id.to_string()),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn match_emma_id_counts_a_name_the_zone_is_named_for() {
+        // One zone for two places, joined by a word or a dash: the name is the
+        // zone's own. Switzerland names nearly every zone this way.
+        for (id, name, city) in [
+            ("DK008", "København og Nordsjælland", "København"),
+            ("UK213", "Brighton and Hove", "Brighton"),
+            ("ES113", "Ibiza y Formentera", "Ibiza"),
+            ("CH107", "Bern-Mühleberg", "Bern"),
+            ("CH225", "Lausanne - Lavaux", "Lausanne"),
+            ("CH205", "La Chaux-de-Fonds - Le Locle", "La Chaux-de-Fonds"),
+            ("SE015", "Bohuskusten+Göteborg", "Göteborg"),
+        ] {
+            let codes = codenames(&[(id, name)]);
+            assert_eq!(
+                match_emma_id(&address(Some(city), None, None), &id[..2], &codes),
+                Some(id.to_string()),
+                "{name}"
+            );
+        }
+        // A canton is not one of the places a zone is named for: Yverdon is
+        // in Vaud, and "Gros-de-Vaud" is another district of it.
+        let codes = codenames(&[("CH218", "Gros-de-Vaud"), ("CH211", "Yverdon - Bevaix")]);
+        assert_eq!(
+            match_emma_id(
+                &address(Some("Yverdon-les-Bains"), None, Some("Vaud")),
+                "CH",
+                &codes
+            ),
+            None
+        );
+        // Neu-Ulm is one part of "Kreis Neu-Ulm", so the town finds its Kreis,
+        // while Ulm's own zone outranks it by its city label.
+        let codes = codenames(&[
+            ("DE348", "Kreis Neu-Ulm"),
+            ("DE074", "Alb-Donau-Kreis und Stadt Ulm"),
+        ]);
+        assert_eq!(
+            match_emma_id(&address(Some("Neu-Ulm"), None, None), "DE", &codes),
+            Some("DE348".to_string())
+        );
+    }
+
+    #[test]
+    fn match_emma_id_does_not_pick_a_district_part_by_name_length() {
+        // Both parts of the Kreis hold its name, and the shorter one used to
+        // win. Rendsburg is inland; "Küste" is the shorter word.
+        let codes = codenames(&[
+            ("DE067", "Kreis Rendsburg-Eckernförde - Küste"),
+            ("DE031", "Kreis Rendsburg-Eckernförde - Binnenland"),
+        ]);
+        assert_eq!(
+            match_emma_id(
+                &address(Some("Rendsburg"), Some("Kreis Rendsburg-Eckernförde"), None),
+                "DE",
+                &codes
+            ),
+            None
         );
     }
 
@@ -3392,6 +3717,25 @@ mod tests {
     }
 
     #[test]
+    fn rank_area_match_longer_area_holds_the_name_only_beside_a_joining_word() {
+        // "Paris et Petite Ceinture" above is Paris's own zone; "Sierra de
+        // Madrid" is another place that happens to hold the city's name.
+        assert_eq!(
+            rank_area_match(&area_tokens("Madrid"), &area_tokens("Sierra de Madrid")),
+            None
+        );
+        assert_eq!(
+            rank_area_match(&area_tokens("Brighton"), &area_tokens("Brighton and Hove")),
+            Some(AreaMatch::Tokens)
+        );
+        // The county holds the area's name: a hit on the area, as before.
+        assert_eq!(
+            rank_area_match(&area_tokens("Comunidad de Madrid"), &area_tokens("Madrid")),
+            Some(AreaMatch::Tokens)
+        );
+    }
+
+    #[test]
     fn rank_area_match_requires_an_anchor_token() {
         // "i" appears in "Kvarner i Kvarneric region" but is too short to
         // anchor a match on its own.
@@ -3448,8 +3792,23 @@ mod tests {
 
     #[test]
     fn match_area_ambiguous_term_is_a_miss() {
-        let areas = strings(&["Seine-Maritime", "Seine-et-Marne", "Hauts-de-Seine"]);
+        // Two areas hold the name beside a joining word, so neither is picked;
+        // the third holds it beside another word and is no candidate at all.
+        let areas = strings(&["Seine-et-Oise", "Seine-et-Marne", "Hauts-de-Seine"]);
         assert_eq!(match_area(&strings(&["Seine"]), &areas), None);
+    }
+
+    #[test]
+    fn match_area_does_not_place_a_city_inside_a_longer_area() {
+        // A stage-1 miss for Madrid must not land on Sierra de Madrid here.
+        let areas = strings(&["Sierra de Madrid", "Metropolitana y Henares"]);
+        assert_eq!(
+            match_area(
+                &strings(&["Madrid", "Stadt Madrid", "Comunidad de Madrid"]),
+                &areas
+            ),
+            None
+        );
     }
 
     #[test]
