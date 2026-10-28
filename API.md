@@ -154,7 +154,11 @@ stage that can tell a quiet day from a miss. When that produces no usable filter
 all), the location's place names are matched against the feed's own `areaDesc`
 values: diacritics folded, administrative affixes such as "Grad" and "region"
 dropped, exact match preferred, and a place name that fits more than one region
-is treated as a miss rather than a guess. Third, only when that missed and a
+is treated as a miss rather than a guess. In both stages a place name found
+inside a longer region name counts only beside a label word ("Linz (Stadt)",
+"County Dublin", "Kreis und Stadt München") or as one of the places the region
+is named for ("Brighton and Hove", "Bern-Mühleberg"), never inside another name
+("Sierra de Madrid" is not Madrid), and a city label outranks a district label. Third, only when that missed and a
 place name is in non-Latin script (Greek, Cyrillic, Hebrew), the country's
 MeteoAlarm JSON feed is read once for its local-language area names, each paired
 with the English name the atom feed uses; the same matching runs over the local
