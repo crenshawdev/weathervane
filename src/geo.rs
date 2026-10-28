@@ -274,6 +274,7 @@ pub(crate) fn get_meteoalarm_info(country_code: &str) -> Option<(&'static str, &
         "se" => Some(("sweden", "SE")),
         "si" => Some(("slovenia", "SI")),
         "sk" => Some(("slovakia", "SK")),
+        "ua" => Some(("ukraine", "UA")),
         _ => None,
     }
 }
@@ -566,6 +567,7 @@ mod tests {
             ("se", "sweden", "SE"),
             ("si", "slovenia", "SI"),
             ("sk", "slovakia", "SK"),
+            ("ua", "ukraine", "UA"),
         ] {
             assert_eq!(get_meteoalarm_info(code), Some((slug, prefix)), "{code}");
         }
