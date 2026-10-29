@@ -113,7 +113,7 @@ pub(crate) struct NwsObservation {
     wind_gusts: Option<f32>,
     /// Visibility in meters.
     visibility: Option<f32>,
-    /// Surface pressure in hPa.
+    /// Sea-level pressure in hPa.
     pressure: Option<f32>,
     /// Dew point in the requested temperature unit.
     dew_point: Option<f32>,
@@ -239,7 +239,10 @@ fn parse_observation(
         wind_direction: props.wind_direction.value.map(|v| v.round() as i32),
         wind_gusts: props.wind_gust.value.map(|k| kmh_to_system(k, system)),
         visibility: props.visibility.value.map(|m| m as f32), //meters, stored direct
-        // barometric preferred, sea-level fallback; both Pa -> hPa
+        // Both are sea-level values: `barometricPressure` is the altimeter
+        // setting, `seaLevelPressure` the reduced reading, which is why the
+        // overlay matches Open-Meteo's `pressure_msl`. Altimeter preferred,
+        // reduced reading as fallback; both Pa -> hPa.
         pressure: props
             .barometric_pressure
             .value
