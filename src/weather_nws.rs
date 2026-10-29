@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::client::get_json;
@@ -29,6 +30,12 @@ const STATIONS_URL_PREFIX: &str = "https://api.weather.gov/stations/";
 /// distance-ordered (nearest first); extra hops cover a nearest station that's
 /// offline or reporting a null temperature. Mirrors JMA's`MAX_HOPS`.
 const MAX_HOPS: usize = 3;
+
+/// How old a station's latest observation may be and still stand in for
+/// "right now": one missed hourly METAR plus margin. A station that stopped
+/// reporting still answers `latest` with its last reading, so without this
+/// gate its hours-old conditions would overwrite Open-Meteo's current ones.
+const MAX_OBSERVATION_AGE: chrono::Duration = chrono::Duration::minutes(90);
 
 /// `api.weather.gov/points/{lat,lon}` response (a GeoJSON Feature).
 #[derive(Debug, Deserialize)]
@@ -76,6 +83,8 @@ struct Measurement {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct ObservationProperties {
+    /// When the station took the reading, RFC 3339. Not a `Measurement`.
+    timestamp: Option<String>,
     temperature: Measurement,
     dewpoint: Measurement,
     relative_humidity: Measurement,
@@ -129,17 +138,19 @@ pub(crate) async fn override_current_observations(
 ) -> Option<NwsObservation> {
     let point = format!("{latitude:.4},{longitude:.4}");
     let station_ids = cached_station_ids(&point).await?;
+    let now = Utc::now();
 
     // Stations are distance-ordered; walk the nearest few until one returns a
-    // usable obs. A failed fetch OR a null-temp obs falls through to the next
-    // hop rather than aborting the override - hence `else {continue }`, not `?`.
+    // usable obs. A failed fetch, a null-temp obs OR a stale obs fall through
+    // to the next hop rather than aborting the override - hence
+    // `else {continue }`, not `?`.
     for id in station_ids.iter().take(MAX_HOPS) {
         let url = format!("{STATIONS_URL_PREFIX}{id}/observations/latest");
         let Some(obs) = get_json::<ObservationResponse>(&url, "NWS observation").await else {
             continue;
         };
         if let Some(parsed) =
-            parse_observation(obs.properties, temperature_unit, measurement_system)
+            parse_observation(obs.properties, temperature_unit, measurement_system, now)
         {
             tracing::debug!("NWS override from station {id}");
             return Some(parsed);
@@ -210,15 +221,24 @@ fn kmh_to_system(kmh: f64, system: MeasurementSystem) -> f32 {
 }
 
 /// Converts a raw NWS observation into an `NwsObservation` in the caller's units
-/// Returns `None` when the station reports no temperature: a null-temp obs means
-/// a stale/offline station, so the caller should try the next hop
+/// Returns `None` when the station reports no temperature, or when its reading
+/// is older than `MAX_OBSERVATION_AGE` as of `now`: either means a
+/// stale/offline station, so the caller should try the next hop
 fn parse_observation(
     props: ObservationProperties,
     unit: TemperatureUnit,
     system: MeasurementSystem,
+    now: DateTime<Utc>,
 ) -> Option<NwsObservation> {
-    // Temperature is the usability gate. `?` here doubles as "try next hop"
-    // signal: no temp -> None -> the loop moves on.
+    // Age is the first usability gate. `?` here doubles as "try next hop"
+    // signal: no timestamp, or one that does not parse, is a reading whose
+    // freshness cannot be vouched for -> None -> the loop moves on.
+    let observed = DateTime::parse_from_rfc3339(props.timestamp.as_deref()?).ok()?;
+    if now.signed_duration_since(observed) > MAX_OBSERVATION_AGE {
+        return None;
+    }
+
+    // Temperature is the second gate, the same way.
     let temperature = props.temperature.value?;
 
     // feels_like precedence: heatIndex then windChill, then the station's
@@ -302,6 +322,7 @@ pub(crate) mod fuzz {
                 obs.properties,
                 TemperatureUnit::Fahrenheit,
                 MeasurementSystem::Imperial,
+                Utc::now(),
             );
         }
     }
@@ -319,9 +340,15 @@ mod tests {
         Measurement { value: None }
     }
 
+    /// The clock the tests read: seven minutes after `sample()`'s reading.
+    fn now() -> DateTime<Utc> {
+        "2026-10-13T14:00:00Z".parse().unwrap()
+    }
+
     /// Fully-populated obs; tests null out fields as needed.
     fn sample() -> ObservationProperties {
         ObservationProperties {
+            timestamp: Some("2026-10-13T13:53:00+00:00".to_string()),
             temperature: meas(20.0),       // 68°F
             dewpoint: meas(10.0),          // 50°F
             relative_humidity: meas(55.4), // → 55
@@ -371,6 +398,7 @@ mod tests {
             sample(),
             TemperatureUnit::Fahrenheit,
             MeasurementSystem::Imperial,
+            now(),
         )
         .unwrap();
         assert!((o.temperature.unwrap() - 68.0).abs() < 0.01);
@@ -387,9 +415,55 @@ mod tests {
     fn none_without_temperature() {
         let mut p = sample();
         p.temperature = empty();
-        assert!(
-            parse_observation(p, TemperatureUnit::Celsius, MeasurementSystem::Metric).is_none()
-        );
+        assert!(parse_observation(
+            p,
+            TemperatureUnit::Celsius,
+            MeasurementSystem::Metric,
+            now()
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn none_when_observation_is_stale() {
+        // A station that stopped reporting still answers `latest` with its
+        // last reading; two hours old is treated like a null temperature.
+        let mut p = sample();
+        p.timestamp = Some("2026-10-13T12:00:00+00:00".to_string());
+        assert!(parse_observation(
+            p,
+            TemperatureUnit::Celsius,
+            MeasurementSystem::Metric,
+            now()
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn observation_within_the_age_limit_is_used() {
+        // 89 minutes old: one missed hourly METAR plus margin, still current.
+        let mut p = sample();
+        p.timestamp = Some("2026-10-13T12:31:00+00:00".to_string());
+        assert!(parse_observation(
+            p,
+            TemperatureUnit::Celsius,
+            MeasurementSystem::Metric,
+            now()
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn none_without_timestamp() {
+        let mut p = sample();
+        p.timestamp = None;
+        assert!(parse_observation(
+            p,
+            TemperatureUnit::Celsius,
+            MeasurementSystem::Metric,
+            now()
+        )
+        .is_none());
     }
 
     #[test]
@@ -418,7 +492,13 @@ mod tests {
 
     // Celsius/Metric so feels_like/temps read as raw °C in assertions.
     fn parse(p: ObservationProperties) -> NwsObservation {
-        parse_observation(p, TemperatureUnit::Celsius, MeasurementSystem::Metric).unwrap()
+        parse_observation(
+            p,
+            TemperatureUnit::Celsius,
+            MeasurementSystem::Metric,
+            now(),
+        )
+        .unwrap()
     }
 
     #[test]
