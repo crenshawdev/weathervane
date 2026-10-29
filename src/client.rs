@@ -6,7 +6,9 @@
 //! connections and caches DNS internally so a long lived client
 //! is the right shape but the same internal state can get stuck
 //! in ways that look like network failure and won't recover on
-//! their own. `reset_http_client` is the ejection seat.
+//! their own. `reset_http_client` is the ejection seat; frontends
+//! call it on resume ([`crate::sleep_stream`]) so a pooled
+//! connection that died across a suspend is never resued.
 
 use crate::error::{Error, Result};
 use serde::de::DeserializeOwned;
@@ -24,6 +26,11 @@ const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 
 /// How long an idle pooled connection can sit before being dropped.
 const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Idle connections kept per host. The crate's own walks (ECCC listings
+/// and CAP files, NWS station hops) are sequential and need one; two
+/// covers a frontend fetching from the same host concurrently.
+const POOL_MAX_IDLE_PER_HOST: usize = 2;
 
 static CLIENT: RwLock<Option<reqwest::Client>> = RwLock::new(None);
 
@@ -46,7 +53,7 @@ pub(crate) fn http_client() -> Result<reqwest::Client> {
         .timeout(REQUEST_TIMEOUT)
         .tcp_keepalive(Some(TCP_KEEPALIVE))
         .pool_idle_timeout(Some(POOL_IDLE_TIMEOUT))
-        .pool_max_idle_per_host(0)
+        .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST)
         .build()
         .map_err(|e| Error::HttpClient(e.to_string()))?;
 
@@ -194,6 +201,46 @@ mod tests {
             !logs_contain("?token="),
             "raw token query string leaked into tracing output on body failure"
         );
+    }
+
+    /// Two sequential requests to one host share a connection: the pool keeps
+    /// it idle between them instead of opening a new TCP connection each time.
+    #[tokio::test]
+    async fn sequential_requests_reuse_one_connection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+
+        let counter = Arc::clone(&accepts);
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    // One read per request is enough for these small GETs;
+                    // the connection stays open for the next one.
+                    while let Ok(n) = stream.read(&mut buf).await {
+                        if n == 0 {
+                            break;
+                        }
+                        let reply = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+                        if stream.write_all(reply.as_bytes()).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+
+        let url = format!("http://{addr}/");
+        assert_eq!(get_text(&url, "pool").await.as_deref(), Some("ok"));
+        assert_eq!(get_text(&url, "pool").await.as_deref(), Some("ok"));
+        assert_eq!(accepts.load(Ordering::SeqCst), 1);
     }
 
     /// The aqicn token must not appear in tracing output when the JSON parse fails.
