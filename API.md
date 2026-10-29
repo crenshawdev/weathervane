@@ -187,8 +187,11 @@ filtering flag. Dispatches to the right provider based on location:
 
 An empty vec means there are no active alerts, or the location has no covering
 provider. Failure to determine the location's country is an `Err`
-(`LocationDetection`), never an empty vec, so a consumer can tell a quiet day
-from a failed lookup.
+(`LocationDetection`), never an empty vec, and so is a provider answering with
+a non-2xx status (`HttpStatus`), so a consumer can tell a quiet day from a
+failed lookup or an outage. ECCC is read from several directories, and one
+that is not there (404) is an office that issued nothing that day; that walk
+is an `Err` only when nothing could be read and some request failed.
 
 The Nominatim reverse geocode behind the European path is cached per coordinate
 pair for the process lifetime, so only the first call for a location reaches
