@@ -28,13 +28,16 @@ const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 static CLIENT: RwLock<Option<reqwest::Client>> = RwLock::new(None);
 
 /// Returns a clone of the shared HTTP client, building it on first use.
+///
+/// A poisoned lock is a cache miss, as in the crate's other caches: the
+/// client is built fresh and, if the slot can't be written, not stored.
 pub(crate) fn http_client() -> Result<reqwest::Client> {
-    if let Some(client) = CLIENT.read().unwrap().as_ref() {
-        return Ok(client.clone());
+    if let Some(client) = CLIENT.read().ok().and_then(|slot| slot.clone()) {
+        return Ok(client);
     }
 
-    let mut slot = CLIENT.write().unwrap();
-    if let Some(client) = slot.as_ref() {
+    let mut slot = CLIENT.write().ok();
+    if let Some(client) = slot.as_deref().and_then(Option::as_ref) {
         return Ok(client.clone());
     }
 
@@ -47,26 +50,20 @@ pub(crate) fn http_client() -> Result<reqwest::Client> {
         .build()
         .map_err(|e| Error::HttpClient(e.to_string()))?;
 
-    *slot = Some(client.clone());
+    if let Some(slot) = slot.as_deref_mut() {
+        *slot = Some(client.clone());
+    }
     Ok(client)
 }
 
 /// Throws away the shared HTTP client. Next request builds a new one.
 ///
 /// For when something inside reqwest is stuck and you'd rather start
-/// over than figure out what.
+/// over than figure out what. On a poisoned lock this does nothing, since
+/// `http_client` already builds a fresh client for every request then.
 pub fn reset_http_client() {
-    *CLIENT.write().unwrap() = None;
-}
-
-/// Returns `url` with its query string replaced by `?[redacted]`.
-/// Used to keep tokens out of tracing output.
-#[allow(dead_code)]
-pub(crate) fn sanitize_url(url: &str) -> String {
-    if let Some(i) = url.find('?') {
-        format!("{}?[redacted]", &url[..i])
-    } else {
-        url.to_string()
+    if let Ok(mut slot) = CLIENT.write() {
+        *slot = None;
     }
 }
 
@@ -113,7 +110,7 @@ pub(crate) async fn get_text(url: &str, ctx: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{get_json, get_text, sanitize_url};
+    use super::{get_json, get_text};
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -124,22 +121,6 @@ mod tests {
     /// Builds a URL that carries the sentinel token in the query string.
     fn build_url_with_sentinel(server_uri: &str) -> String {
         format!("{server_uri}/feed?token={AQICN_LEAK_SENTINEL_TOKEN_DO_NOT_LOG}")
-    }
-
-    /// sanitize_url strips the query string so the sentinel never appears in log output.
-    #[test]
-    fn sanitize_url_strips_sentinel_from_query_string() {
-        let base = "https://api.waqi.info/feed/geo:35.0;139.0/";
-        let url = format!("{base}?token={AQICN_LEAK_SENTINEL_TOKEN_DO_NOT_LOG}");
-        let sanitized = sanitize_url(&url);
-        assert!(
-            !sanitized.contains(AQICN_LEAK_SENTINEL_TOKEN_DO_NOT_LOG),
-            "sentinel leaked from sanitize_url: {sanitized}"
-        );
-        assert!(
-            sanitized.ends_with("?[redacted]"),
-            "unexpected sanitize_url output format: {sanitized}"
-        );
     }
 
     /// The aqicn token must not appear in tracing output when the TCP connection fails.
