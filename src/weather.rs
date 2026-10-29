@@ -37,7 +37,9 @@ pub struct CurrentWeather {
     pub uv_index: f32,
     /// Visibility in meters. Convert with [`MeasurementSystem::convert_visibility`].
     pub visibility: f32,
-    /// Surface pressure in hPa. Convert with [`PressureUnit::convert`].
+    /// Sea-level pressure in hPa, the number forecasts and barometers show,
+    /// so a reading at altitude is comparable to one at the coast. Convert
+    /// with [`PressureUnit::convert`].
     pub pressure: f32,
     /// Cloud cover as a percentage (0-100).
     pub cloud_cover: i32,
@@ -125,7 +127,7 @@ pub async fn fetch_weather(
     measurement_system: MeasurementSystem,
 ) -> Result<WeatherData> {
     let url = format!(
-        "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&current=temperature_2m,weathercode,windspeed_10m,relative_humidity_2m,apparent_temperature,wind_direction_10m,wind_gusts_10m,uv_index,visibility,surface_pressure,cloud_cover,dewpoint_2m&hourly=temperature_2m,weathercode,precipitation_probability,precipitation,windspeed_10m,wind_gusts_10m&daily=temperature_2m_max,temperature_2m_min,weathercode,windspeed_10m_max,wind_direction_10m_dominant,precipitation_probability_max,sunrise,sunset&temperature_unit={}&windspeed_unit={}&precipitation_unit={}&timezone=auto&forecast_days=7&forecast_hours=24",
+        "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&current=temperature_2m,weathercode,windspeed_10m,relative_humidity_2m,apparent_temperature,wind_direction_10m,wind_gusts_10m,uv_index,visibility,pressure_msl,cloud_cover,dewpoint_2m&hourly=temperature_2m,weathercode,precipitation_probability,precipitation,windspeed_10m,wind_gusts_10m&daily=temperature_2m_max,temperature_2m_min,weathercode,windspeed_10m_max,wind_direction_10m_dominant,precipitation_probability_max,sunrise,sunset&temperature_unit={}&windspeed_unit={}&precipitation_unit={}&timezone=auto&forecast_days=7&forecast_hours=24",
         latitude,
         longitude,
         temperature_unit.api_param(),
@@ -267,7 +269,7 @@ fn weather_from_open_meteo(data: OpenMeteoResponse, current_temperature: f32) ->
             wind_gusts: data.current.wind_gusts_10m,
             uv_index: data.current.uv_index,
             visibility: data.current.visibility,
-            pressure: data.current.surface_pressure,
+            pressure: data.current.pressure_msl,
             cloud_cover: data.current.cloud_cover,
             dew_point: data.current.dewpoint_2m,
         },
@@ -310,7 +312,7 @@ struct CurrentData {
     wind_gusts_10m: f32,
     uv_index: f32,
     visibility: f32,
-    surface_pressure: f32,
+    pressure_msl: f32,
     cloud_cover: i32,
     dewpoint_2m: f32,
 }
@@ -374,7 +376,7 @@ mod tests {
             "wind_gusts_10m": 12.0,
             "uv_index": 4.5,
             "visibility": 10000.0,
-            "surface_pressure": 1013.25,
+            "pressure_msl": 1013.25,
             "cloud_cover": 10,
             "dewpoint_2m": 55.0
         },
@@ -413,7 +415,7 @@ mod tests {
             "wind_gusts_10m": 5.0,
             "uv_index": 1.0,
             "visibility": 10000.0,
-            "surface_pressure": 1000.0,
+            "pressure_msl": 1000.0,
             "cloud_cover": 0,
             "dewpoint_2m": 40.0
         })
@@ -469,6 +471,14 @@ mod tests {
         assert_eq!(result.current.cloud_cover, 10);
         assert_eq!(result.current.dew_point, 55.0);
         assert_eq!(result.utc_offset_seconds, -25200);
+    }
+
+    #[test]
+    fn open_meteo_current_reads_sea_level_not_surface_pressure() {
+        // A body carrying only `surface_pressure` is the old request's shape;
+        // it must not decode, so the field cannot silently revert to surface.
+        let body = CURRENT_FIELDS_FIXTURE.replace("pressure_msl", "surface_pressure");
+        assert!(serde_json::from_str::<OpenMeteoResponse>(&body).is_err());
     }
 
     #[test]

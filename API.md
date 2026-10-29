@@ -33,7 +33,7 @@ than 50km, the call falls through to Open-Meteo's value without surfacing an
 error. Forecast and hourly data are unaffected.
 
 Returns `WeatherData`:
-- `current: CurrentWeather` -- temperature, humidity, feels-like, wind speed/direction/gusts, UV index, visibility, pressure, cloud cover, dew point, weathercode, and pre-computed `condition` and `compass_direction`
+- `current: CurrentWeather` -- temperature, humidity, feels-like, wind speed/direction/gusts, UV index, visibility, sea-level pressure, cloud cover, dew point, weathercode, and pre-computed `condition` and `compass_direction`
 - `hourly: Vec<HourlyForecast>` -- up to 12 entries with time, temperature, weathercode, condition, precipitation probability
 - `forecast: Vec<DailyForecast>` -- 7 entries with date, high/low temps, weathercode, condition, sunrise/sunset times
 
