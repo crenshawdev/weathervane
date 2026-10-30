@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.14.0 — 2026-10-30
+
+### Changed
+- `fetch_alerts` returns `Err(Error::HttpStatus(code))` when NWS, MeteoAlarm or
+  BOM answers with a non-2xx status, where it returned an empty list, so an
+  outage no longer reads as a quiet day. ECCC is read from several
+  directories, and one that is not there (404) is an office that issued
+  nothing that day; the ECCC walk is an `Err` only when no file could be read
+  and some request failed. Partial reads keep the alerts they got. The
+  signature is unchanged. (#62)
+- `CurrentWeather.pressure` is sea-level pressure, read from Open-Meteo's
+  `pressure_msl` instead of `surface_pressure`. The NWS station overlay
+  already gave sea-level values, so the two sources now agree. Near sea level
+  the number barely moves; at altitude it is much higher than before. The
+  field name, type and wire shape are unchanged. (#63)
+- For NWS alerts, `Alert.expires` is when the event ends (`ends`), not when
+  the message lapses and NWS reissues it, and falls back to the message's
+  `expires` when NWS gives no end. An alert whose event has ended is dropped
+  even while its message is still current. MeteoAlarm, ECCC and BOM are
+  unchanged. (#54)
+- `detect_region` decides `Region::Us` from the US outline instead of latitude
+  bands and an Alaska box: the 50 states, DC, Puerto Rico, the US Virgin
+  Islands, Guam, the Northern Mariana Islands and American Samoa, from the
+  Census TIGER/Line 2023 state file, with the Canadian and Mexican borders at
+  about 500 m. Canadian border cities such as Windsor, Sarnia and Victoria now
+  route to ECCC, northern Mexico and the Bahamas no longer route to NWS, and
+  the territories get NWS alerts and the NWS current-conditions overlay.
+  Hawaii keeps its box. Open water more than about 33 km off the Atlantic or
+  Alaskan coast now falls through to the Canada box. (#56)
+- The shared HTTP client keeps two idle connections per host instead of none,
+  so sequential requests to one host reuse a connection. Frontends should call
+  `reset_http_client` on resume from suspend, so a connection that died across
+  the suspend is not reused. (#67)
+
+### Fixed
+- North Macedonia gets MeteoAlarm alerts. Its feed slug is
+  `republic-of-north-macedonia`; the old `north-macedonia` slug returned 404
+  on both feeds. (#44)
+- Ukraine is covered by MeteoAlarm through the `ukraine` feed. The feed tags
+  no entry with an EMMA_ID, so a Ukrainian location gets the national feed
+  with `region_filtered: false`. (#60)
+- EMMA_IDs are matched by whole words, so Angers no longer resolves to Gers or
+  Saint-Étienne to Ain, and hyphenated names such as `Maine-et-Loire` match
+  `Maine et Loire`. Only a county or state may hold a codename, so a town named
+  for a river, such as Saint-Laurent-du-Var, no longer resolves to the
+  département named for the same river. (#49)
+- French locations filter to their own département. France tags each entry's
+  `cap:geocode` as NUTS3, so the EMMA_ID is read from the entry's area link
+  instead. An entry with no EMMA_ID, such as France's coastal warnings, is
+  kept only when its `areaDesc` is exactly the user's area. (#46)
+- MeteoAlarm entries that repeat the same alert for the same area, once per
+  polygon or once per geocode, are dropped, and the first is kept. (#50)
+- A place name found inside a longer codename or area name counts only beside
+  a label word ("Linz (Stadt)", "County Dublin") or as one of the places a
+  zone is named for ("Brighton and Hove", "Bern-Mühleberg"), and a city label
+  outranks a district label. Madrid no longer resolves to `Sierra de Madrid`,
+  Linz picks `Linz (Stadt)` over `Linz (Land)`, and Ulm and Venezia no longer
+  land in `Kreis Neu-Ulm` and `Friuli Venezia Giulia`. Some places that used
+  to resolve by codename length now miss and get the national feed with
+  `region_filtered: false`. (#58)
+- The NWS current-conditions overlay skips a station reading older than 90
+  minutes, or one with no timestamp, and tries the next station, so a station
+  that stopped reporting no longer overwrites Open-Meteo's current conditions
+  with its last reading. (#64)
+- ECCC alerts are read from the office that issues them: Alberta from `CWWG`,
+  everything at or north of 60N from `CWNT`, and Nunavik from `CWUL`. A point
+  on 60N no longer falls back to `CWTO`. (#68)
+- A poisoned HTTP client lock is treated as a cache miss instead of a panic,
+  as the crate's other caches already do. (#65)
+
 ## 0.13.1 — 2026-10-20
 
 ### Fixed
