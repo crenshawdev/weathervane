@@ -179,37 +179,31 @@ pub(crate) fn encode_geohash(lat: f64, lon: f64, precision: usize) -> String {
     hash
 }
 
-/// Maps Canadian province/territory to ECCC weather office codes.
-/// Returns the primary office and optionally secondary offices for border regions.
+/// Maps a point in Canada to the ECCC offices whose alert directories to read.
+/// The bands overlap on purpose: every CAP entry is filtered by its own
+/// polygon, so an extra office costs a few reads and a missing one costs the
+/// alerts. Each office appears at most once.
 pub(crate) fn get_eccc_office_codes(lat: f64, lon: f64) -> Vec<&'static str> {
     let mut offices = Vec::new();
 
-    // British Columbia: roughly west of -120
-    if lon < -114.0 && lat < 60.0 {
+    // British Columbia west of -114, and Yukon west of -124; both include 60N
+    if (lon < -114.0 && lat <= 60.0) || (lon < -124.0 && lat >= 60.0) {
         offices.push("CWVR");
     }
-    // Yukon: northwest corner
-    if lon < -124.0 && lat > 60.0 {
-        offices.push("CWVR");
-    }
-    // Alberta: -120 to -110, south of 60
-    if (-120.0..=-110.0).contains(&lon) && lat < 60.0 {
+    // Northwest Territories, Nunavut and the Mackenzie Delta: 60N and north
+    if lat >= 60.0 {
         offices.push("CWNT");
     }
-    // Northwest Territories and Nunavut: north of 60
-    if lat > 60.0 && lon > -124.0 {
-        offices.push("CWNT");
-    }
-    // Saskatchewan and Manitoba: -110 to -89
-    if (-110.0..=-89.0).contains(&lon) && lat < 60.0 {
+    // Alberta, Saskatchewan and Manitoba: -120 to -89
+    if (-120.0..=-89.0).contains(&lon) && lat <= 60.0 {
         offices.push("CWWG");
     }
-    // Ontario: -95 to -74
-    if (-95.0..=-74.0).contains(&lon) && lat < 56.0 {
+    // Ontario: -95.5 to -74, up to the Hudson Bay coast
+    if (-95.5..=-74.0).contains(&lon) && lat < 57.0 {
         offices.push("CWTO");
     }
-    // Quebec: east of -79
-    if lon > -79.0 && lat < 55.0 && lon < -57.0 {
+    // Quebec, Nunavik included: east of -79
+    if lon > -79.0 && lat < 63.0 && lon < -57.0 {
         offices.push("CWUL");
     }
     // Atlantic provinces: east of -67 or specific lat/lon ranges
@@ -496,34 +490,48 @@ mod tests {
 
     #[test]
     fn eccc_office_codes_map_provinces() {
-        assert!(
-            get_eccc_office_codes(43.65, -79.38).contains(&"CWTO"),
-            "Toronto -> Ontario"
-        );
-        assert!(
-            get_eccc_office_codes(53.55, -113.49).contains(&"CWNT"),
-            "Edmonton -> Alberta"
-        );
-        assert!(
-            get_eccc_office_codes(49.90, -97.14).contains(&"CWWG"),
-            "Winnipeg -> Sask/Man"
-        );
-        assert!(
-            get_eccc_office_codes(49.28, -123.12).contains(&"CWVR"),
-            "Vancouver -> Pacific"
-        );
-        assert!(
-            get_eccc_office_codes(44.65, -63.57).contains(&"CWHX"),
-            "Halifax -> Atlantic"
+        // Each place reads the office that issues its alerts: ECCC files
+        // Alberta under CWWG, the Mackenzie Delta under CWNT and Nunavik
+        // under CWUL.
+        for (lat, lon, office, name) in [
+            (43.65, -79.38, "CWTO", "Toronto"),
+            (49.90, -97.14, "CWWG", "Winnipeg"),
+            (49.28, -123.12, "CWVR", "Vancouver"),
+            (44.65, -63.57, "CWHX", "Halifax"),
+            (53.5461, -113.4938, "CWWG", "Edmonton"),
+            (51.0447, -114.0719, "CWWG", "Calgary"),
+            (50.0405, -110.6766, "CWWG", "Medicine Hat"),
+            (56.7267, -111.3810, "CWWG", "Fort McMurray"),
+            (68.3607, -133.7230, "CWNT", "Inuvik"),
+            (69.4454, -133.0342, "CWNT", "Tuktoyaktuk"),
+            (60.0383, -77.2836, "CWUL", "Puvirnituq"),
+            (62.2050, -75.6406, "CWUL", "Salluit"),
+            (60.7212, -135.0568, "CWVR", "Whitehorse"),
+        ] {
+            assert!(
+                get_eccc_office_codes(lat, lon).contains(&office),
+                "{name} -> {office}"
+            );
+        }
+    }
+
+    #[test]
+    fn eccc_office_codes_include_60n() {
+        // On the Yukon-BC border both CWVR rules match; the office is read once.
+        assert_eq!(get_eccc_office_codes(60.0, -130.0), vec!["CWVR", "CWNT"]);
+        // On the Alberta-NWT border, both sides' offices.
+        assert_eq!(
+            get_eccc_office_codes(60.0, -115.0),
+            vec!["CWVR", "CWNT", "CWWG"]
         );
     }
 
     #[test]
     fn eccc_office_codes_fallback_to_ontario() {
-        // Northern Ungava (58N, 70W) sits in a gap between the province bands
-        // (too far north for Quebec's lat<55, west of the Atlantic cutoff),
+        // Hudson Bay (58N, 85W) sits in a gap between the province bands
+        // (north of Ontario's lat<57, west of Quebec's -79, south of 60N),
         // so it exercises the empty-match fallback to CWTO.
-        assert_eq!(get_eccc_office_codes(58.0, -70.0), vec!["CWTO"]);
+        assert_eq!(get_eccc_office_codes(58.0, -85.0), vec!["CWTO"]);
     }
 
     #[test]
