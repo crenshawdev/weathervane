@@ -8,7 +8,7 @@
 //! in ways that look like network failure and won't recover on
 //! their own. `reset_http_client` is the ejection seat; frontends
 //! call it on resume ([`crate::sleep_stream`]) so a pooled
-//! connection that died across a suspend is never resued.
+//! connection that died across a suspend is never reused.
 
 use crate::error::{Error, Result};
 use serde::de::DeserializeOwned;

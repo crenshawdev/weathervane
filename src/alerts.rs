@@ -923,12 +923,6 @@ fn holds_joined(outer: &[String], inner: &[String]) -> bool {
         })
 }
 
-/// The one area name the user's place names pick out of the feed, or None.
-///
-/// Terms run most specific first. Within a term the best rank wins, and it
-/// counts only when every area at that rank is the same area, so a place name
-/// that fits several regions ("Seine" against three départements) is a miss
-/// for that term rather than a guess, and the next term is tried.
 /// The first place name, broadest first, whose words are exactly one area
 /// name's, every word counted. A name that is exactly several areas picks none
 /// and the next is tried. Broadest first because the feed's areas are regions:
@@ -950,6 +944,12 @@ fn match_area_exactly(search_terms: &[String], area_names: &[String]) -> Option<
     })
 }
 
+/// The one area name the user's place names pick out of the feed, or None.
+///
+/// Terms run most specific first. Within a term the best rank wins, and it
+/// counts only when every area at that rank is the same area, so a place name
+/// that fits several regions ("Seine" against three départements) is a miss
+/// for that term rather than a guess, and the next term is tried.
 fn match_area(search_terms: &[String], area_names: &[String]) -> Option<String> {
     for term in search_terms {
         let term_tokens = area_tokens(term);
@@ -1105,7 +1105,7 @@ fn meteoalarm_alerts_from_feed(
         .iter()
         .any(|entry| entry_emma_id(entry).is_some());
 
-    // Both stages macth place names against the feed's own area names.
+    // Both stages match place names against the feed's own area names.
     let mut area_names: Vec<String> = feed
         .entries
         .iter()
