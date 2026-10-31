@@ -1,6 +1,8 @@
 # weathervane
 
 [![CI](https://github.com/crenshawdev/weathervane/actions/workflows/ci.yml/badge.svg)](https://github.com/crenshawdev/weathervane/actions/workflows/ci.yml)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=crenshawdev_weathervane&metric=alert_status)](https://sonarcloud.io/project/overview?id=crenshawdev_weathervane)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=crenshawdev_weathervane&metric=coverage)](https://sonarcloud.io/project/overview?id=crenshawdev_weathervane)
 [![crates.io](https://img.shields.io/crates/v/weathervane)](https://crates.io/crates/weathervane)
 [![Crates.io downloads](https://img.shields.io/crates/d/weathervane?logo=rust)](https://crates.io/crates/weathervane)
 [![docs.rs](https://docs.rs/weathervane/badge.svg)](https://docs.rs/weathervane)
