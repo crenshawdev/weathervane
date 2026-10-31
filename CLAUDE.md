@@ -39,3 +39,6 @@ cargo clippy --workspace -- -D warnings
 cargo build --workspace
 cargo test --workspace
 ```
+
+CI's coverage job fails below 85% line coverage (`cargo llvm-cov --fail-under-lines 85`).
+The target is 91%, so new code comes with tests that keep it there.

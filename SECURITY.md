@@ -8,4 +8,4 @@ Report it privately through GitHub: open the repository's Security tab and choos
 
 Only collaborators can open pull requests. Each one runs the `CI` workflow.
 
-`CI` ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test` and a 75 percent line-coverage gate. Any failure fails the pull request.
+`CI` ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test` and an 85 percent line-coverage gate. Any failure fails the pull request.
