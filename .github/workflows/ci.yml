@@ -84,7 +84,18 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # Forks and Dependabot runs don't get the secret, so they skip the scan.
+      - name: Check for SonarQube token
+        id: sonar
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [ -n "$SONAR_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Cache SonarQube packages
+        if: steps.sonar.outputs.enabled == 'true'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.sonar/cache
@@ -92,7 +103,7 @@ jobs:
           restore-keys: ${{ runner.os }}-sonar
 
       - name: SonarQube scan
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        if: steps.sonar.outputs.enabled == 'true'
         uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304 # v8.4.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
