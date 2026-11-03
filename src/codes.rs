@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Core returns the enum variant, frontends match it to produce translated strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum WeatherCondition {
     /// WMO code 0.
     ClearSky,

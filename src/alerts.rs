@@ -17,6 +17,7 @@ use crate::geo::{
 
 /// Weather alert severity levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum AlertSeverity {
     /// Low-impact advisory. Frost warnings, wind advisories, etc.
     Minor,

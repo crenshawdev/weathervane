@@ -11,6 +11,7 @@ use crate::geo::{detect_region, Region};
 
 /// AQI standard based on geographic region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AqiStandard {
     /// US EPA AQI. Scale 0-500, used everywhere outside Europe.
     Us,
@@ -33,6 +34,7 @@ pub enum AqiSource {
 
 /// US EPA AQI category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum UsAqiCategory {
     /// AQI 0-50.
     Good,
@@ -64,6 +66,7 @@ impl UsAqiCategory {
 
 /// European AQI category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum EuAqiCategory {
     /// AQI 0-20.
     Good,
@@ -102,6 +105,7 @@ impl EuAqiCategory {
 /// scales, so deserialization is exact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "standard", content = "level")]
+#[non_exhaustive]
 pub enum AqiCategory {
     /// US EPA category. Returned for all non-European locations.
     Us(UsAqiCategory),

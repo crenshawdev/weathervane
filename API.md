@@ -8,6 +8,10 @@ The crate never touches i18n. Where the old applet returned translated strings,
 this returns enums. You match on the enum and produce whatever localized string your
 UI needs.
 
+`Region`, `AlertSeverity`, `WeatherCondition`, the AQI standard and category enums,
+and the error enums are `#[non_exhaustive]`, so a `match` on one needs a `_` arm.
+A new variant can then arrive in a minor release without breaking your build.
+
 ## Weather
 
 ### `fetch_weather`

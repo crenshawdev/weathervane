@@ -10,6 +10,7 @@ use crate::error::{Error, ParseKind, Result};
 
 /// Geographic region for alert provider and AQI standard selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Region {
     /// Continental US, Alaska, Hawaii and US territories.
     /// Uses NWS alerts and US EPA AQI.

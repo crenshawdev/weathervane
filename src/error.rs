@@ -7,6 +7,7 @@ use thiserror::Error;
 /// Sub-category of a [`Error::Network`] failure, so callers can react to (say)
 /// a failed connection differently from a malformed body without string-matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NetworkKind {
     /// Failed to establish a connection to the host.
     Connect,
@@ -32,6 +33,7 @@ impl std::fmt::Display for NetworkKind {
 /// Sub-category of a [`Error::Parse`] failure, identifying the body format that
 /// failed to decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ParseKind {
     /// JSON decoding failed.
     Json,
@@ -49,6 +51,7 @@ impl std::fmt::Display for ParseKind {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("request timed out")]
     Timeout,
