@@ -60,6 +60,107 @@ pub struct Alert {
     pub description: String,
     /// When this alert stops being relevant.
     pub expires: DateTime<Utc>,
+    /// MeteoAlarm's classification of the alert, paired from the v1 JSON
+    /// feed by identifier. `None` for NWS, ECCC and BOM, and for MeteoAlarm
+    /// when the JSON request failed or no warning in it carries this alert's
+    /// identifier; the alert is returned either way.
+    #[serde(default)]
+    pub awareness: Option<MeteoAlarmAwareness>,
+}
+
+/// MeteoAlarm's classification of an alert: the hazard and the colour level,
+/// from the v1 JSON feed's `awareness_type` and `awareness_level` parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeteoAlarmAwareness {
+    /// The hazard, the feed's `awareness_type` (`"4; Fog"`).
+    pub kind: AwarenessType,
+    /// The colour level, the feed's `awareness_level` (`"2; yellow; Moderate"`).
+    pub level: AwarenessLevel,
+}
+
+/// MeteoAlarm awareness type, keyed on the number that leads the feed's
+/// `awareness_type` value. The number is the same in every country; the
+/// label after it is not (`snow-ice` and `Snow-ice` both occur).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum AwarenessType {
+    /// 1
+    Wind,
+    /// 2
+    SnowIce,
+    /// 3
+    Thunderstorm,
+    /// 4
+    Fog,
+    /// 5
+    HighTemperature,
+    /// 6
+    LowTemperature,
+    /// 7
+    CoastalEvent,
+    /// 8
+    ForestFire,
+    /// 9
+    Avalanche,
+    /// 10
+    Rain,
+    /// 12
+    Flooding,
+    /// 13
+    RainFlood,
+    /// A number this crate does not know, including 11, which MeteoAlarm
+    /// has not assigned.
+    Unknown,
+}
+
+impl AwarenessType {
+    fn from_code(code: u32) -> Self {
+        match code {
+            1 => Self::Wind,
+            2 => Self::SnowIce,
+            3 => Self::Thunderstorm,
+            4 => Self::Fog,
+            5 => Self::HighTemperature,
+            6 => Self::LowTemperature,
+            7 => Self::CoastalEvent,
+            8 => Self::ForestFire,
+            9 => Self::Avalanche,
+            10 => Self::Rain,
+            12 => Self::Flooding,
+            13 => Self::RainFlood,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// MeteoAlarm awareness level, keyed on the number that leads the feed's
+/// `awareness_level` value. Green is MeteoAlarm's "no particular awareness";
+/// some countries publish it, most do not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum AwarenessLevel {
+    /// 1
+    Green,
+    /// 2
+    Yellow,
+    /// 3
+    Orange,
+    /// 4
+    Red,
+    /// A number this crate does not know.
+    Unknown,
+}
+
+impl AwarenessLevel {
+    fn from_code(code: u32) -> Self {
+        match code {
+            1 => Self::Green,
+            2 => Self::Yellow,
+            3 => Self::Orange,
+            4 => Self::Red,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 /// One alert with the provider's name for the area it covers.
@@ -226,6 +327,7 @@ fn nws_alerts_from_response(data: NwsAlertsResponse) -> Vec<AlertEntry> {
                     headline: props.headline.unwrap_or_default(),
                     description: props.description.unwrap_or_default(),
                     expires: ends.unwrap_or(expires),
+                    awareness: None,
                 },
                 area_desc: props.area_desc.unwrap_or_default(),
             })
@@ -285,9 +387,10 @@ struct MeteoAlarmLink {
     href: Option<String>,
 }
 
-/// MeteoAlarm v1 JSON API response, `/api/v1/warnings/feeds-<slug>`. Read
-/// only for its per-language `areaDesc` values; the atom feed stays the
-/// source of alerts.
+/// MeteoAlarm v1 JSON API response, `/api/v1/warnings/feeds-<slug>`. Fetched
+/// beside the atom feed, which stays the source of alerts, for two things the
+/// atom feed lacks: the awareness parameters, paired to an alert by
+/// identifier, and the per-language `areaDesc` values for stage 3.
 #[derive(Debug, Deserialize)]
 struct MeteoAlarmJsonFeed {
     #[serde(default)]
@@ -301,17 +404,30 @@ struct MeteoAlarmJsonWarning {
 
 #[derive(Debug, Deserialize)]
 struct MeteoAlarmJsonAlert {
+    /// CAP identifier, the atom entry's `cap:identifier`.
+    identifier: Option<String>,
     #[serde(default)]
     info: Vec<MeteoAlarmJsonInfo>,
 }
 
 /// One `info` block per language (`en-GB`, `el-GR`, `bg`, ...), each with
-/// the same areas in the same order.
+/// the same parameters and the same areas in the same order.
 #[derive(Debug, Deserialize)]
 struct MeteoAlarmJsonInfo {
     language: Option<String>,
     #[serde(default)]
+    parameter: Vec<MeteoAlarmJsonParameter>,
+    #[serde(default)]
     area: Vec<MeteoAlarmJsonArea>,
+}
+
+/// A CAP parameter. The two read here are `awareness_type` (`"4; Fog"`) and
+/// `awareness_level` (`"2; yellow; Moderate"`).
+#[derive(Debug, Deserialize)]
+struct MeteoAlarmJsonParameter {
+    #[serde(rename = "valueName")]
+    value_name: Option<String>,
+    value: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -402,34 +518,40 @@ async fn fetch_meteoalarm_codenames_uncached() -> Option<MeteoAlarmCodenames> {
     }
 }
 
+/// The JSON feed is the largest body the crate downloads: the Germany feed
+/// runs to a couple of megabytes, served uncompressed. It gets its own
+/// timeout so a slow transfer is not cut off at the client's cap.
+const METEOALARM_JSON_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
 /// The feed's own local-language area names, paired with the English names
 /// the atom feed uses. Read from the v1 JSON API, whose alerts carry one
 /// `info` block per language. Expired warnings are kept: this is a name
 /// inventory, not an alert list, and a larger one matches more quiet regions.
-/// Not cached: it is fetched only on the non-Latin miss path, once per
-/// refresh, and a fresh inventory is worth more than one saved request.
-async fn fetch_meteoalarm_local_areas(slug: &str) -> Option<Vec<LocalArea>> {
-    let url = format!(
-        "https://feeds.meteoalarm.org/api/v1/warnings/feeds-{}",
-        slug
-    );
-
+/// Fetched beside the atom feed on every call, not cached. `None` on any
+/// failure, logged: the alerts are still returned, without awareness and,
+/// for a non-Latin place name, without the local-name match.
+async fn fetch_meteoalarm_json(url: &str) -> Option<MeteoAlarmJsonFeed> {
     let client = match http_client() {
         Ok(client) => client,
         Err(e) => {
             tracing::warn!(
-                "No HTTP client for MeteoAlarm local area names ({}); national feed stays unfiltered",
+                "No HTTP client for the MeteoAlarm JSON feed ({}); alerts carry no awareness codes",
                 e
             );
             return None;
         }
     };
 
-    let response = match client.get(&url).send().await {
+    let response = match client
+        .get(url)
+        .timeout(METEOALARM_JSON_TIMEOUT)
+        .send()
+        .await
+    {
         Ok(response) => response,
         Err(e) => {
             tracing::warn!(
-                "MeteoAlarm local area names fetch failed ({}); national feed stays unfiltered",
+                "MeteoAlarm JSON feed fetch failed ({}); alerts carry no awareness codes",
                 e
             );
             return None;
@@ -437,15 +559,70 @@ async fn fetch_meteoalarm_local_areas(slug: &str) -> Option<Vec<LocalArea>> {
     };
 
     match response.json::<MeteoAlarmJsonFeed>().await {
-        Ok(feed) => Some(local_areas_from_json(feed)),
+        Ok(feed) => Some(feed),
         Err(e) => {
             tracing::warn!(
-                "MeteoAlarm local area names decode failed ({}); national feed stays unfiltered",
+                "MeteoAlarm JSON feed decode failed ({}); alerts carry no awareness codes",
                 e
             );
             None
         }
     }
+}
+
+/// Each warning's awareness, by CAP identifier. The parameters repeat on
+/// every language block of a warning; the first block carrying both, each
+/// with a leading number, is read. A warning without that, or without an
+/// identifier, is left out, so its alert's `awareness` stays `None`.
+fn awareness_by_identifier(feed: &MeteoAlarmJsonFeed) -> HashMap<String, MeteoAlarmAwareness> {
+    let mut by_id = HashMap::new();
+    for warning in &feed.warnings {
+        let Some(identifier) = warning.alert.identifier.as_deref() else {
+            continue;
+        };
+        let Some(awareness) = warning.alert.info.iter().find_map(awareness_from_info) else {
+            continue;
+        };
+        by_id.entry(identifier.to_string()).or_insert(awareness);
+    }
+    by_id
+}
+
+/// The block's awareness, when both parameters are there with a number.
+fn awareness_from_info(info: &MeteoAlarmJsonInfo) -> Option<MeteoAlarmAwareness> {
+    let code = |name: &str| {
+        info.parameter
+            .iter()
+            .find(|p| p.value_name.as_deref() == Some(name))
+            .and_then(|p| awareness_code(p.value.as_deref()?))
+    };
+    Some(MeteoAlarmAwareness {
+        kind: AwarenessType::from_code(code("awareness_type")?),
+        level: AwarenessLevel::from_code(code("awareness_level")?),
+    })
+}
+
+/// The number that leads an awareness parameter: `"4; Fog"` is 4,
+/// `"2; yellow; Moderate"` is 2.
+fn awareness_code(value: &str) -> Option<u32> {
+    value.split(';').next()?.trim().parse().ok()
+}
+
+/// Sets each entry's awareness from the JSON warning with its identifier;
+/// an entry without one keeps `None`.
+fn attach_awareness(alerts: &mut [AlertEntry], awareness: &HashMap<String, MeteoAlarmAwareness>) {
+    for entry in alerts.iter_mut() {
+        entry.alert.awareness = awareness.get(&entry.alert.id).copied();
+    }
+    let paired = alerts
+        .iter()
+        .filter(|entry| entry.alert.awareness.is_some())
+        .count();
+    tracing::debug!(
+        "{} of {} MeteoAlarm alert(s) paired with awareness codes",
+        paired,
+        alerts.len()
+    );
 }
 
 /// Every (local name, English name) pair the feed carries, sorted and
@@ -1030,25 +1207,37 @@ async fn fetch_meteoalarm_alerts(latitude: f64, longitude: f64) -> Result<AlertR
         slug
     );
 
-    let feed = fetch_meteoalarm_feed(&url).await?;
+    let json_url = format!(
+        "https://feeds.meteoalarm.org/api/v1/warnings/feeds-{}",
+        slug
+    );
+
+    // Both feeds at once: the atom feed is the source of alerts, the JSON
+    // feed carries the awareness codes and the local-language area names.
+    // A JSON failure costs those two things, never the alerts.
+    let (feed, json) = futures::join!(
+        fetch_meteoalarm_feed(&url),
+        fetch_meteoalarm_json(&json_url)
+    );
+    let feed = feed?;
 
     let search_terms = emma_search_terms(&address);
-    let report = meteoalarm_alerts_from_feed(feed, &user_emma_id, &search_terms, country);
+    let mut report = meteoalarm_alerts_from_feed(feed, &user_emma_id, &search_terms, country);
 
-    // Stage 3, only after a stage-2 miss for a non-Latin place name: the
-    // feed's local-language area names, one request, no cache.
-    if report.region_filtered || !has_non_latin(&search_terms) {
-        return Ok(report);
-    }
-    let Some(local_areas) = fetch_meteoalarm_local_areas(slug).await else {
+    let Some(json) = json else {
         return Ok(report);
     };
-    Ok(apply_local_area_match(
-        report,
-        &search_terms,
-        &local_areas,
-        country,
-    ))
+    let awareness = awareness_by_identifier(&json);
+
+    // Stage 3, only after a stage-2 miss for a non-Latin place name: the
+    // JSON feed's local-language area names.
+    if !report.region_filtered && has_non_latin(&search_terms) {
+        report =
+            apply_local_area_match(report, &search_terms, &local_areas_from_json(json), country);
+    }
+
+    attach_awareness(&mut report.alerts, &awareness);
+    Ok(report)
 }
 
 /// The request and decode, split out so a mock server can stand in for the
@@ -1380,6 +1569,7 @@ fn parse_meteoalarm_entry(
             headline,
             description: String::new(),
             expires,
+            awareness: None,
         },
         area_desc: entry.cap_area_desc.unwrap_or_default(),
     })
@@ -1757,6 +1947,7 @@ fn parse_eccc_cap(
                         headline,
                         description: info.description.clone().unwrap_or_default(),
                         expires,
+                        awareness: None,
                     },
                     area_desc,
                 },
@@ -1886,6 +2077,7 @@ fn bom_alerts_from_response(data: Vec<BomWarning>) -> Vec<AlertEntry> {
                     headline,
                     description: String::new(),
                     expires,
+                    awareness: None,
                 },
                 // BOM's warnings endpoint carries no area name.
                 area_desc: String::new(),
@@ -1919,11 +2111,13 @@ pub(crate) mod fuzz {
         }
     }
 
-    /// MeteoAlarm v1 JSON, through the local-language area match.
+    /// MeteoAlarm v1 JSON, through the awareness pairing and the
+    /// local-language area match.
     pub fn meteoalarm_json(data: &[u8]) {
         let Ok(feed) = serde_json::from_slice::<MeteoAlarmJsonFeed>(data) else {
             return;
         };
+        let _ = awareness_by_identifier(&feed);
         let local_areas = local_areas_from_json(feed);
         let report = AlertReport {
             alerts: vec![],
@@ -4783,5 +4977,168 @@ mod tests {
 
         assert_eq!(report.alerts.len(), 1);
         assert!(!report.region_filtered);
+    }
+
+    // -----------------------------------------------------------------
+    // Awareness codes: the JSON feed paired to the atom entries
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn awareness_code_is_the_leading_number() {
+        assert_eq!(awareness_code("4; Fog"), Some(4));
+        assert_eq!(awareness_code("2; yellow; Moderate"), Some(2));
+        assert_eq!(awareness_code(" 10 ;Rain"), Some(10));
+        assert_eq!(awareness_code("Fog"), None);
+        assert_eq!(awareness_code(""), None);
+    }
+
+    #[test]
+    fn awareness_type_from_code_covers_the_meteoalarm_table() {
+        let table = [
+            (1, AwarenessType::Wind),
+            (2, AwarenessType::SnowIce),
+            (3, AwarenessType::Thunderstorm),
+            (4, AwarenessType::Fog),
+            (5, AwarenessType::HighTemperature),
+            (6, AwarenessType::LowTemperature),
+            (7, AwarenessType::CoastalEvent),
+            (8, AwarenessType::ForestFire),
+            (9, AwarenessType::Avalanche),
+            (10, AwarenessType::Rain),
+            (12, AwarenessType::Flooding),
+            (13, AwarenessType::RainFlood),
+        ];
+        for (code, kind) in table {
+            assert_eq!(AwarenessType::from_code(code), kind, "code {code}");
+        }
+        // 11 is unassigned by MeteoAlarm; 0 and 14 are outside the table.
+        for code in [0, 11, 14] {
+            assert_eq!(
+                AwarenessType::from_code(code),
+                AwarenessType::Unknown,
+                "code {code}"
+            );
+        }
+    }
+
+    #[test]
+    fn awareness_level_from_code_covers_the_four_colours() {
+        assert_eq!(AwarenessLevel::from_code(1), AwarenessLevel::Green);
+        assert_eq!(AwarenessLevel::from_code(2), AwarenessLevel::Yellow);
+        assert_eq!(AwarenessLevel::from_code(3), AwarenessLevel::Orange);
+        assert_eq!(AwarenessLevel::from_code(4), AwarenessLevel::Red);
+        for code in [0, 5] {
+            assert_eq!(
+                AwarenessLevel::from_code(code),
+                AwarenessLevel::Unknown,
+                "code {code}"
+            );
+        }
+    }
+
+    /// A JSON warning with the two awareness parameters repeated on each
+    /// language block, as every sampled feed lays them out.
+    fn json_warning(identifier: &str, kind: &str, level: &str) -> String {
+        let parameters = format!(
+            r#"[{{"valueName": "awareness_level", "value": "{level}"}},
+                {{"valueName": "awareness_type", "value": "{kind}"}}]"#
+        );
+        format!(
+            r#"{{"alert": {{"identifier": "{identifier}", "info": [
+                {{"language": "de-DE", "parameter": {parameters}, "area": [{{"areaDesc": "Kreis Harburg"}}]}},
+                {{"language": "en", "parameter": {parameters}, "area": [{{"areaDesc": "Kreis Harburg"}}]}}
+            ]}}}}"#
+        )
+    }
+
+    fn fog_yellow() -> MeteoAlarmAwareness {
+        MeteoAlarmAwareness {
+            kind: AwarenessType::Fog,
+            level: AwarenessLevel::Yellow,
+        }
+    }
+
+    #[test]
+    fn awareness_by_identifier_reads_the_first_block_with_both_codes() {
+        let json = format!(
+            r#"{{"warnings": [{}, {}, {}, {}, {}, {}]}}"#,
+            json_warning("DE.1", "4; Fog", "2; yellow; Moderate"),
+            // One parameter only: no awareness.
+            r#"{"alert": {"identifier": "DE.2", "info": [{"language": "en",
+                "parameter": [{"valueName": "awareness_level", "value": "3; orange; Severe"}]}]}}"#,
+            // A value without a leading number: no awareness.
+            json_warning("DE.3", "Fog", "2; yellow; Moderate"),
+            // No identifier: nothing to pair with.
+            r#"{"alert": {"info": [{"language": "en", "parameter": [
+                {"valueName": "awareness_level", "value": "2; yellow; Moderate"},
+                {"valueName": "awareness_type", "value": "1; Wind"}]}]}}"#,
+            // Numbers outside the tables still pair, as Unknown.
+            json_warning("DE.4", "11; something", "9; blue; Extreme"),
+            // The same identifier again: the first wins.
+            json_warning("DE.1", "1; Wind", "4; red; Extreme"),
+        );
+        let feed: MeteoAlarmJsonFeed = serde_json::from_str(&json).unwrap();
+
+        let by_id = awareness_by_identifier(&feed);
+
+        assert_eq!(by_id.len(), 2, "{by_id:?}");
+        assert_eq!(by_id["DE.1"], fog_yellow());
+        assert_eq!(
+            by_id["DE.4"],
+            MeteoAlarmAwareness {
+                kind: AwarenessType::Unknown,
+                level: AwarenessLevel::Unknown,
+            }
+        );
+    }
+
+    #[test]
+    fn attach_awareness_pairs_by_identifier_and_leaves_the_rest_none() {
+        let xml = format!(
+            "<feed>{}{}</feed>",
+            cap_entry("de-1", "DE.1", Some("DE911"), "Kreis Harburg"),
+            cap_entry("de-2", "DE.2", Some("DE911"), "Kreis Harburg")
+        );
+        let feed: MeteoAlarmFeed = quick_xml::de::from_str(&xml).unwrap();
+        let mut report =
+            meteoalarm_alerts_from_feed(feed, &Some("DE911".to_string()), &[], "Deutschland");
+        let by_id = HashMap::from([("DE.1".to_string(), fog_yellow())]);
+
+        attach_awareness(&mut report.alerts, &by_id);
+
+        assert_eq!(report.alerts.len(), 2);
+        assert_eq!(report.alerts[0].alert.awareness, Some(fog_yellow()));
+        assert_eq!(report.alerts[1].alert.awareness, None);
+    }
+
+    #[tokio::test]
+    async fn meteoalarm_json_ok_status_decodes_the_feed() {
+        let server = server_answering(
+            200,
+            &format!(
+                r#"{{"warnings": [{}]}}"#,
+                json_warning("DE.1", "4; Fog", "2; yellow; Moderate")
+            ),
+        )
+        .await;
+        let feed = fetch_meteoalarm_json(&server.uri()).await.unwrap();
+        assert_eq!(awareness_by_identifier(&feed)["DE.1"], fog_yellow());
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn meteoalarm_json_failure_is_none_not_an_error() {
+        // The alerts come from the atom feed; a JSON failure only costs the
+        // awareness codes, and says so.
+        let server = server_answering(404, "").await;
+        assert!(fetch_meteoalarm_json(&server.uri()).await.is_none());
+        assert!(logs_contain("alerts carry no awareness codes"));
+    }
+
+    #[test]
+    fn meteoalarm_json_timeout_extends_the_client_cap() {
+        // The override exists to outlast the shared client's timeout; a
+        // value at or below it would silently restore the cut-off.
+        assert!(METEOALARM_JSON_TIMEOUT > crate::client::REQUEST_TIMEOUT);
     }
 }

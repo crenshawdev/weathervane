@@ -9,7 +9,8 @@ expression: round_trip(&alert_entry())
     "severity": "Severe",
     "headline": "Severe thunderstorm until 10 PM EDT",
     "description": "Wind gusts to 60 mph expected.",
-    "expires": "2026-06-11T22:00:00Z"
+    "expires": "2026-06-11T22:00:00Z",
+    "awareness": null
   },
   "area_desc": "Warszawa"
 }

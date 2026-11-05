@@ -95,7 +95,7 @@ if let Some(p) = pollen {
 
 **Pollen**: current grains per cubic meter for alder, birch, grass, mugwort, olive, and ragweed. Europe only.
 
-**Alerts**: severity, headline, description, expiry. Normalized across all four providers into a single `Alert` type.
+**Alerts**: severity, headline, description, expiry, and for MeteoAlarm the awareness type and level. Normalized across all four providers into a single `Alert` type.
 
 **Units**: temperature (F/C), pressure (hPa/inHg/PSI), measurement system (imperial/metric). Pass the types in, get formatted values out.
 

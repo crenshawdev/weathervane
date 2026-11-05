@@ -1,0 +1,16 @@
+---
+source: tests/wire_contract.rs
+expression: round_trip(&alert_meteoalarm())
+---
+{
+  "id": "2.49.0.0.276.0.DWD.PVW.1793794860000.410fa97d",
+  "event": "Fog",
+  "severity": "Moderate",
+  "headline": "Official WARNING of FOG",
+  "description": "",
+  "expires": "2026-06-11T22:00:00Z",
+  "awareness": {
+    "kind": "Fog",
+    "level": "Yellow"
+  }
+}

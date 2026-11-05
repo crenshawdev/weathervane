@@ -9,8 +9,9 @@ this returns enums. You match on the enum and produce whatever localized string 
 UI needs.
 
 `Region`, `AlertSeverity`, `WeatherCondition`, the AQI standard and category enums,
-and the error enums are `#[non_exhaustive]`, so a `match` on one needs a `_` arm.
-A new variant can then arrive in a minor release without breaking your build.
+the MeteoAlarm awareness enums and the error enums are `#[non_exhaustive]`, so a
+`match` on one needs a `_` arm. A new variant can then arrive in a minor release
+without breaking your build.
 
 ## Weather
 
@@ -163,13 +164,13 @@ is treated as a miss rather than a guess. In both stages a place name found
 inside a longer region name counts only beside a label word ("Linz (Stadt)",
 "County Dublin", "Kreis und Stadt München") or as one of the places the region
 is named for ("Brighton and Hove", "Bern-Mühleberg"), never inside another name
-("Sierra de Madrid" is not Madrid), and a city label outranks a district label. Third, only when that missed and a
-place name is in non-Latin script (Greek, Cyrillic, Hebrew), the country's
-MeteoAlarm JSON feed is read once for its local-language area names, each paired
-with the English name the atom feed uses; the same matching runs over the local
-names, with a small allowance for inflection (Nominatim's genitive "Αττικής"
-meets the feed's "Αττική"), and a hit keeps the entries whose area is the paired
-English name. Latin-script locations never make that request. When an EMMA_ID
+("Sierra de Madrid" is not Madrid), and a city label outranks a district label.
+Third, only when that missed and a place name is in non-Latin script (Greek,
+Cyrillic, Hebrew), the local-language area names in the country's MeteoAlarm JSON
+feed (fetched beside the atom feed, see `awareness` below), each paired with the
+English name the atom feed uses, get the same matching, with a small allowance
+for inflection (Nominatim's genitive "Αττικής" meets the feed's "Αττική"), and
+a hit keeps the entries whose area is the paired English name. When an EMMA_ID
 did resolve against an EMMA_ID-tagged feed, entries carrying no geocode are
 dropped rather than shown, since they cannot be placed in any region.
 
@@ -185,7 +186,7 @@ filtering flag. Dispatches to the right provider based on location:
 | Region    | Provider   | Notes                                          |
 |-----------|------------|-------------------------------------------------|
 | US        | NWS API    | GeoJSON point query                             |
-| Europe    | MeteoAlarm | Atom feeds, EMMA_ID matching via Nominatim      |
+| Europe    | MeteoAlarm | Atom + v1 JSON feeds, EMMA_ID matching via Nominatim |
 | Canada    | ECCC       | CAP XML from `dd.weather.gc.ca`, polygon filter  |
 | Australia | BOM API    | Geohash lookup                                  |
 | Other     | --         | Returns empty vec                                |
@@ -211,6 +212,32 @@ Each `Alert` has:
 - `description: String` -- full text (empty for MeteoAlarm and BOM, which don't provide it)
 - `expires: DateTime<Utc>` -- when the alert expires; for NWS when the event ends (`ends`),
   falling back to the message's `expires` when NWS gives no end
+- `awareness: Option<MeteoAlarmAwareness>` -- MeteoAlarm's own classification of the
+  alert, `kind` (`AwarenessType`) and `level` (`AwarenessLevel`); `None` for NWS, ECCC
+  and BOM, and for MeteoAlarm when its JSON feed could not be read or carries no
+  warning with the alert's identifier
+
+MeteoAlarm publishes each alert twice: the atom feed, the source of the alerts
+above, and a v1 JSON feed whose `awareness_type` and `awareness_level` parameters
+classify the alert by number, the same in every country where the `event` wording
+is not. Both are fetched concurrently on every call and paired by CAP identifier;
+a JSON failure costs the awareness and the third filtering stage, never the alerts.
+The JSON feed is the largest body the crate downloads and is served uncompressed,
+so its request runs on a longer timeout than the crate's other calls.
+
+```rust
+pub struct MeteoAlarmAwareness {
+    pub kind: AwarenessType,
+    pub level: AwarenessLevel,
+}
+
+pub enum AwarenessType { Wind, SnowIce, Thunderstorm, Fog, HighTemperature, LowTemperature, CoastalEvent, ForestFire, Avalanche, Rain, Flooding, RainFlood, Unknown }
+pub enum AwarenessLevel { Green, Yellow, Orange, Red, Unknown }
+```
+
+`AwarenessType` follows MeteoAlarm's numbering, 1 through 13 with 11 unassigned;
+`AwarenessLevel` is 1 (green) through 4 (red). `Unknown` is a number outside those
+tables.
 
 Expired alerts are filtered out before returning. ECCC alerts are read from
 yesterday's and today's files, and for each alert and area only the latest
