@@ -211,26 +211,39 @@ fn weather_data_shape() {
 
 fn air_quality_us() -> AirQualityData {
     AirQualityData {
-        aqi: 42,
+        aqi: Some(42),
         category: AqiCategory::Us(UsAqiCategory::Good),
-        pm2_5: 8.1,
-        pm10: 14.9,
-        ozone: 61.3,
-        nitrogen_dioxide: 9.4,
-        carbon_monoxide: 142.0,
+        pm2_5: Some(8.1),
+        pm10: Some(14.9),
+        ozone: Some(61.3),
+        nitrogen_dioxide: Some(9.4),
+        carbon_monoxide: Some(142.0),
         aqi_source: AqiSource::OpenMeteo,
     }
 }
 
 fn air_quality_eu() -> AirQualityData {
     AirQualityData {
-        aqi: 35,
+        aqi: Some(35),
         category: AqiCategory::Eu(EuAqiCategory::Fair),
-        pm2_5: 8.1,
-        pm10: 14.9,
-        ozone: 61.3,
-        nitrogen_dioxide: 9.4,
-        carbon_monoxide: 142.0,
+        pm2_5: Some(8.1),
+        pm10: Some(14.9),
+        ozone: Some(61.3),
+        nitrogen_dioxide: Some(9.4),
+        carbon_monoxide: Some(142.0),
+        aqi_source: AqiSource::OpenMeteo,
+    }
+}
+
+fn air_quality_missing() -> AirQualityData {
+    AirQualityData {
+        aqi: None,
+        category: AqiCategory::Us(UsAqiCategory::Unknown),
+        pm2_5: None,
+        pm10: None,
+        ozone: None,
+        nitrogen_dioxide: None,
+        carbon_monoxide: None,
         aqi_source: AqiSource::OpenMeteo,
     }
 }
@@ -239,6 +252,7 @@ fn air_quality_eu() -> AirQualityData {
 fn air_quality_shapes() {
     insta::assert_snapshot!("air_quality_us", round_trip(&air_quality_us()));
     insta::assert_snapshot!("air_quality_eu", round_trip(&air_quality_eu()));
+    insta::assert_snapshot!("air_quality_missing", round_trip(&air_quality_missing()));
 }
 
 /// The adjacent tag must round-trip Eu(Good) to Eu(Good) — the exact bug an
@@ -252,6 +266,15 @@ fn aqi_category_round_trips_exactly() {
     let us = AqiCategory::Us(UsAqiCategory::Good);
     let back: AqiCategory = serde_json::from_str(&serde_json::to_string(&us).unwrap()).unwrap();
     assert_eq!(back, us);
+
+    for unknown in [
+        AqiCategory::Us(UsAqiCategory::Unknown),
+        AqiCategory::Eu(EuAqiCategory::Unknown),
+    ] {
+        let back: AqiCategory =
+            serde_json::from_str(&serde_json::to_string(&unknown).unwrap()).unwrap();
+        assert_eq!(back, unknown);
+    }
 }
 
 #[test]
@@ -268,6 +291,8 @@ fn air_quality_without_aqi_source_defaults_to_open_meteo() {
     let legacy = r#"{"aqi":42,"category":{"standard":"Us","level":"Good"},"pm2_5":8.1,"pm10":14.9,"ozone":61.3,"nitrogen_dioxide":9.4,"carbon_monoxide":142.0}"#;
     let parsed: AirQualityData = serde_json::from_str(legacy).unwrap();
     assert_eq!(parsed.aqi_source, AqiSource::OpenMeteo);
+    assert_eq!(parsed.aqi, Some(42));
+    assert_eq!(parsed.pm2_5, Some(8.1));
 }
 
 // ---------------------------------------------------------------------------

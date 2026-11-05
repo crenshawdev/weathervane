@@ -1,0 +1,17 @@
+---
+source: tests/wire_contract.rs
+expression: round_trip(&air_quality_missing())
+---
+{
+  "aqi": null,
+  "category": {
+    "standard": "Us",
+    "level": "Unknown"
+  },
+  "pm2_5": null,
+  "pm10": null,
+  "ozone": null,
+  "nitrogen_dioxide": null,
+  "carbon_monoxide": null,
+  "aqi_source": "OpenMeteo"
+}

@@ -120,6 +120,23 @@ EU standard:
 }
 ```
 
+No reading (the provider returned none; the category keeps its scale):
+```json
+{
+  "aqi": null,
+  "category": {
+    "standard": "Us",
+    "level": "Unknown"
+  },
+  "pm2_5": null,
+  "pm10": null,
+  "ozone": null,
+  "nitrogen_dioxide": null,
+  "carbon_monoxide": null,
+  "aqi_source": "OpenMeteo"
+}
+```
+
 ### Alert (array element of the alerts payload)
 ```json
 {

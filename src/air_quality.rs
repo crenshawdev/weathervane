@@ -48,6 +48,9 @@ pub enum UsAqiCategory {
     VeryUnhealthy,
     /// AQI 301+.
     Hazardous,
+    /// No reading: the provider returned no US AQI for this location.
+    /// [`UsAqiCategory::from_aqi`] never returns it.
+    Unknown,
 }
 
 impl UsAqiCategory {
@@ -80,6 +83,9 @@ pub enum EuAqiCategory {
     VeryPoor,
     /// AQI 101+.
     ExtremelyPoor,
+    /// No reading: the provider returned no European AQI for this location.
+    /// [`EuAqiCategory::from_aqi`] never returns it.
+    Unknown,
 }
 
 impl EuAqiCategory {
@@ -117,20 +123,23 @@ pub enum AqiCategory {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AirQualityData {
     /// AQI value. Scale depends on the standard (US 0-500, EU 0-100+).
-    pub aqi: i32,
+    /// `None` when the provider returned no reading.
+    pub aqi: Option<i32>,
     /// Categorized severity for display. Also carries which standard applies;
-    /// see [`AirQualityData::standard()`].
+    /// see [`AirQualityData::standard()`]. The scale's `Unknown` when `aqi`
+    /// is `None`.
     pub category: AqiCategory,
-    /// Fine particulate matter (micrograms per cubic meter).
-    pub pm2_5: f32,
+    /// Fine particulate matter (micrograms per cubic meter). `None` when the
+    /// provider returned no reading, as for each pollutant below.
+    pub pm2_5: Option<f32>,
     /// Coarse particulate matter (micrograms per cubic meter).
-    pub pm10: f32,
+    pub pm10: Option<f32>,
     /// Ground-level ozone (micrograms per cubic meter).
-    pub ozone: f32,
+    pub ozone: Option<f32>,
     /// NO2 concentration (micrograms per cubic meter).
-    pub nitrogen_dioxide: f32,
+    pub nitrogen_dioxide: Option<f32>,
     /// CO concentration (micrograms per cubic meter).
-    pub carbon_monoxide: f32,
+    pub carbon_monoxide: Option<f32>,
     /// Which provider supplied the headline AQI. Defaults to OpenMeteo for
     /// wire back-compat with payloads serialized before this field existed.
     #[serde(default)]
@@ -191,50 +200,45 @@ pub async fn fetch_air_quality(
     Ok(AirQualityData {
         aqi,
         category,
-        pm2_5: data.current.pm2_5.unwrap_or(0.0),
-        pm10: data.current.pm10.unwrap_or(0.0),
-        ozone: data.current.ozone.unwrap_or(0.0),
-        nitrogen_dioxide: data.current.nitrogen_dioxide.unwrap_or(0.0),
-        carbon_monoxide: data.current.carbon_monoxide.unwrap_or(0.0),
+        pm2_5: data.current.pm2_5,
+        pm10: data.current.pm10,
+        ozone: data.current.ozone,
+        nitrogen_dioxide: data.current.nitrogen_dioxide,
+        carbon_monoxide: data.current.carbon_monoxide,
         aqi_source,
     })
 }
 
 /// Resolves the headline `(aqi, category, aqi_source)` tuple: aqicn (US scale)
-/// when present, else Open-Meteo on the region-appropriate scale. Lives in its
-/// own function so the headline-AQI resolution can be unit-tested without a
-/// live network.
+/// when present, else Open-Meteo on the region-appropriate scale. A missing
+/// Open-Meteo value is `None` with that scale's `Unknown` category. Lives in
+/// its own function so the headline-AQI resolution can be unit-tested without
+/// a live network.
 fn resolve_headline_aqi(
     response: &AirQualityResponse,
     region: Region,
     aqicn_aqi: Option<i32>,
-) -> (i32, AqiCategory, AqiSource) {
+) -> (Option<i32>, AqiCategory, AqiSource) {
     if let Some(val) = aqicn_aqi {
         (
-            val,
+            Some(val),
             AqiCategory::Us(UsAqiCategory::from_aqi(val)),
             AqiSource::Aqicn,
         )
     } else if region == Region::Europe {
-        let val = response.current.european_aqi.unwrap_or_else(|| {
-            tracing::warn!("European AQI missing from API response, defaulting to 0");
-            0
-        });
-        (
-            val,
-            AqiCategory::Eu(EuAqiCategory::from_aqi(val)),
-            AqiSource::OpenMeteo,
-        )
+        let val = response.current.european_aqi;
+        if val.is_none() {
+            tracing::warn!("European AQI missing from API response");
+        }
+        let category = val.map_or(EuAqiCategory::Unknown, EuAqiCategory::from_aqi);
+        (val, AqiCategory::Eu(category), AqiSource::OpenMeteo)
     } else {
-        let val = response.current.us_aqi.unwrap_or_else(|| {
-            tracing::warn!("US AQI missing from API response, defaulting to 0");
-            0
-        });
-        (
-            val,
-            AqiCategory::Us(UsAqiCategory::from_aqi(val)),
-            AqiSource::OpenMeteo,
-        )
+        let val = response.current.us_aqi;
+        if val.is_none() {
+            tracing::warn!("US AQI missing from API response");
+        }
+        let category = val.map_or(UsAqiCategory::Unknown, UsAqiCategory::from_aqi);
+        (val, AqiCategory::Us(category), AqiSource::OpenMeteo)
     }
 }
 
@@ -300,7 +304,7 @@ mod tests {
         assert_eq!(
             result,
             (
-                88,
+                Some(88),
                 AqiCategory::Us(UsAqiCategory::Moderate),
                 AqiSource::Aqicn
             )
@@ -316,7 +320,7 @@ mod tests {
         assert_eq!(
             result,
             (
-                42,
+                Some(42),
                 AqiCategory::Us(UsAqiCategory::Good),
                 AqiSource::OpenMeteo
             )
@@ -324,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_headline_aqi_us_region_with_missing_us_aqi_defaults_to_zero() {
+    fn resolve_headline_aqi_us_region_with_missing_us_aqi_is_unknown() {
         let json = r#"{"current": {"us_aqi": null, "european_aqi": null, "pm2_5": null,
             "pm10": null, "ozone": null, "nitrogen_dioxide": null, "carbon_monoxide": null}}"#;
         let data: AirQualityResponse = serde_json::from_str(json).unwrap();
@@ -332,8 +336,8 @@ mod tests {
         assert_eq!(
             result,
             (
-                0,
-                AqiCategory::Us(UsAqiCategory::Good),
+                None,
+                AqiCategory::Us(UsAqiCategory::Unknown),
                 AqiSource::OpenMeteo
             )
         );
@@ -348,7 +352,7 @@ mod tests {
         assert_eq!(
             result,
             (
-                25,
+                Some(25),
                 AqiCategory::Eu(EuAqiCategory::Fair),
                 AqiSource::OpenMeteo
             )
@@ -356,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_headline_aqi_europe_region_with_missing_european_aqi_defaults_to_zero() {
+    fn resolve_headline_aqi_europe_region_with_missing_european_aqi_is_unknown() {
         let json = r#"{"current": {"us_aqi": null, "european_aqi": null, "pm2_5": null,
             "pm10": null, "ozone": null, "nitrogen_dioxide": null, "carbon_monoxide": null}}"#;
         let data: AirQualityResponse = serde_json::from_str(json).unwrap();
@@ -364,8 +368,8 @@ mod tests {
         assert_eq!(
             result,
             (
-                0,
-                AqiCategory::Eu(EuAqiCategory::Good),
+                None,
+                AqiCategory::Eu(EuAqiCategory::Unknown),
                 AqiSource::OpenMeteo
             )
         );
@@ -380,7 +384,7 @@ mod tests {
         assert_eq!(
             result,
             (
-                175,
+                Some(175),
                 AqiCategory::Us(UsAqiCategory::Unhealthy),
                 AqiSource::OpenMeteo
             )
@@ -471,40 +475,45 @@ mod tests {
 
     // --- AirQualityData::standard() ---
 
+    fn air_quality_data(category: AqiCategory) -> AirQualityData {
+        AirQualityData {
+            aqi: None,
+            category,
+            pm2_5: None,
+            pm10: None,
+            ozone: None,
+            nitrogen_dioxide: None,
+            carbon_monoxide: None,
+            aqi_source: AqiSource::OpenMeteo,
+        }
+    }
+
     #[test]
     fn air_quality_data_standard_returns_us_for_us_variant() {
-        let data = AirQualityData {
-            aqi: 0,
-            category: AqiCategory::Us(UsAqiCategory::Good),
-            pm2_5: 0.0,
-            pm10: 0.0,
-            ozone: 0.0,
-            nitrogen_dioxide: 0.0,
-            carbon_monoxide: 0.0,
-            aqi_source: AqiSource::OpenMeteo,
-        };
+        let data = air_quality_data(AqiCategory::Us(UsAqiCategory::Good));
         assert_eq!(data.standard(), AqiStandard::Us);
     }
 
     #[test]
     fn air_quality_data_standard_returns_european_for_eu_variant() {
-        let data = AirQualityData {
-            aqi: 0,
-            category: AqiCategory::Eu(EuAqiCategory::Good),
-            pm2_5: 0.0,
-            pm10: 0.0,
-            ozone: 0.0,
-            nitrogen_dioxide: 0.0,
-            carbon_monoxide: 0.0,
-            aqi_source: AqiSource::OpenMeteo,
-        };
+        let data = air_quality_data(AqiCategory::Eu(EuAqiCategory::Good));
         assert_eq!(data.standard(), AqiStandard::European);
     }
 
-    // --- pollutant Option defaults ---
+    /// A missing reading keeps its scale: the region decides the standard
+    /// even when there is no value to categorize.
+    #[test]
+    fn air_quality_data_standard_holds_for_unknown() {
+        let us = air_quality_data(AqiCategory::Us(UsAqiCategory::Unknown));
+        assert_eq!(us.standard(), AqiStandard::Us);
+        let eu = air_quality_data(AqiCategory::Eu(EuAqiCategory::Unknown));
+        assert_eq!(eu.standard(), AqiStandard::European);
+    }
+
+    // --- missing readings ---
 
     #[test]
-    fn air_quality_response_missing_pollutants_default_to_zero_after_fetch() {
+    fn air_quality_response_missing_pollutants_are_none_after_fetch() {
         let json = r#"{"current": {"us_aqi": 42, "european_aqi": null, "pm2_5": null,
             "pm10": null, "ozone": null, "nitrogen_dioxide": null, "carbon_monoxide": null}}"#;
         let data: AirQualityResponse = serde_json::from_str(json).unwrap();
@@ -512,17 +521,18 @@ mod tests {
         let built = AirQualityData {
             aqi,
             category,
-            pm2_5: data.current.pm2_5.unwrap_or(0.0),
-            pm10: data.current.pm10.unwrap_or(0.0),
-            ozone: data.current.ozone.unwrap_or(0.0),
-            nitrogen_dioxide: data.current.nitrogen_dioxide.unwrap_or(0.0),
-            carbon_monoxide: data.current.carbon_monoxide.unwrap_or(0.0),
+            pm2_5: data.current.pm2_5,
+            pm10: data.current.pm10,
+            ozone: data.current.ozone,
+            nitrogen_dioxide: data.current.nitrogen_dioxide,
+            carbon_monoxide: data.current.carbon_monoxide,
             aqi_source,
         };
-        assert_eq!(built.pm2_5, 0.0);
-        assert_eq!(built.pm10, 0.0);
-        assert_eq!(built.ozone, 0.0);
-        assert_eq!(built.nitrogen_dioxide, 0.0);
-        assert_eq!(built.carbon_monoxide, 0.0);
+        assert_eq!(built.aqi, Some(42));
+        assert_eq!(built.pm2_5, None);
+        assert_eq!(built.pm10, None);
+        assert_eq!(built.ozone, None);
+        assert_eq!(built.nitrogen_dioxide, None);
+        assert_eq!(built.carbon_monoxide, None);
     }
 }
