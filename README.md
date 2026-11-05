@@ -70,7 +70,7 @@ Air quality automatically picks the right AQI standard (US EPA or European) base
 use weathervane::fetch_air_quality;
 
 let aqi = fetch_air_quality(48.8566, 2.3522, None).await?;
-println!("AQI: {} ({:?})", aqi.aqi, aqi.category);
+println!("AQI: {:?} ({:?})", aqi.aqi, aqi.category);
 
 // With a user-supplied token for ground-station AQI:
 let aqi = fetch_air_quality(35.68, 139.69, Some("your-token-here")).await?;

@@ -83,10 +83,10 @@ Using aqicn requires attribution and is restricted to free-software and
 non-commercial use. See their [data platform terms](https://aqicn.org/data-platform/token/).
 
 Returns `AirQualityData`:
-- `aqi: i32` -- the raw index value
-- `category: AqiCategory` -- `Us(UsAqiCategory)` or `Eu(EuAqiCategory)`, computed during fetch
-- `standard()` -- method returning `AqiStandard` (`Us` or `European`), derived from `category`
-- Pollutant readings: `pm2_5`, `pm10`, `ozone`, `nitrogen_dioxide`, `carbon_monoxide` (µg/m³, Open-Meteo)
+- `aqi: Option<i32>` -- the raw index value, `None` when the provider returned no reading
+- `category: AqiCategory` -- `Us(UsAqiCategory)` or `Eu(EuAqiCategory)`, computed during fetch; the scale's `Unknown` when `aqi` is `None`
+- `standard()` -- method returning `AqiStandard` (`Us` or `European`), derived from `category`; still reports the scale when `aqi` is `None`
+- Pollutant readings: `pm2_5`, `pm10`, `ozone`, `nitrogen_dioxide`, `carbon_monoxide` (`Option<f32>`, µg/m³, Open-Meteo), each `None` when missing
 - `aqi_source: AqiSource` -- which provider supplied the headline `aqi`/`category` for this fetch
 
 ### AqiSource
@@ -109,13 +109,14 @@ serialized before this field existed deserialize as `OpenMeteo`.
 ### AQI Categories
 
 ```rust
-pub enum UsAqiCategory { Good, Moderate, UnhealthySensitive, Unhealthy, VeryUnhealthy, Hazardous }
-pub enum EuAqiCategory { Good, Fair, Moderate, Poor, VeryPoor, ExtremelyPoor }
+pub enum UsAqiCategory { Good, Moderate, UnhealthySensitive, Unhealthy, VeryUnhealthy, Hazardous, Unknown }
+pub enum EuAqiCategory { Good, Fair, Moderate, Poor, VeryPoor, ExtremelyPoor, Unknown }
 pub enum AqiCategory { Us(UsAqiCategory), Eu(EuAqiCategory) }
 ```
 
 Match on these for translations. `UsAqiCategory::from_aqi(i32)` and
 `EuAqiCategory::from_aqi(i32)` are public if you need to categorize values yourself.
+`Unknown` means no reading; `from_aqi` never returns it.
 
 `AqiCategory` serializes adjacent-tagged — `{"standard": "Us", "level": "Good"}`.
 JSON shapes for all public types are frozen in [CONTRACT.md](CONTRACT.md).
