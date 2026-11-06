@@ -34,7 +34,10 @@ pub mod fuzz_api;
 pub use air_quality::{
     AirQualityData, AqiCategory, AqiSource, AqiStandard, EuAqiCategory, UsAqiCategory,
 };
-pub use alerts::{Alert, AlertEntry, AlertReport, AlertSeverity};
+pub use alerts::{
+    Alert, AlertEntry, AlertReport, AlertSeverity, AwarenessLevel, AwarenessType,
+    MeteoAlarmAwareness,
+};
 pub use codes::{CompassDirection, WeatherCondition};
 pub use error::{Error, NetworkKind, ParseKind, Result};
 pub use geo::{detect_region, Region};

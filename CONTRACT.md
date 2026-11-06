@@ -145,9 +145,30 @@ No reading (the provider returned none; the category keeps its scale):
   "severity": "Severe",
   "headline": "Severe thunderstorm until 10 PM EDT",
   "description": "Wind gusts to 60 mph expected.",
-  "expires": "2026-06-11T22:00:00Z"
+  "expires": "2026-06-11T22:00:00Z",
+  "awareness": null
 }
 ```
+
+A MeteoAlarm alert carries its awareness pair; every other provider's
+`awareness` is `null`, per the Option policy:
+```json
+{
+  "id": "2.49.0.0.276.0.DWD.PVW.1793794860000.410fa97d",
+  "event": "Fog",
+  "severity": "Moderate",
+  "headline": "Official WARNING of FOG",
+  "description": "",
+  "expires": "2026-06-11T22:00:00Z",
+  "awareness": {
+    "kind": "Fog",
+    "level": "Yellow"
+  }
+}
+```
+
+`awareness.kind` and `awareness.level` are PascalCase variant strings of
+`AwarenessType` and `AwarenessLevel` (API.md).
 
 ### AlertEntry (array element of the detailed alerts payload)
 ```json
@@ -158,7 +179,8 @@ No reading (the provider returned none; the category keeps its scale):
     "severity": "Severe",
     "headline": "Severe thunderstorm until 10 PM EDT",
     "description": "Wind gusts to 60 mph expected.",
-    "expires": "2026-06-11T22:00:00Z"
+    "expires": "2026-06-11T22:00:00Z",
+    "awareness": null
   },
   "area_desc": "Warszawa"
 }
@@ -178,7 +200,8 @@ the provider sends none (BOM), per the missing-strings rule.
         "severity": "Severe",
         "headline": "Severe thunderstorm until 10 PM EDT",
         "description": "Wind gusts to 60 mph expected.",
-        "expires": "2026-06-11T22:00:00Z"
+        "expires": "2026-06-11T22:00:00Z",
+        "awareness": null
       },
       "area_desc": "Warszawa"
     }

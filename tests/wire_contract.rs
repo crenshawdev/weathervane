@@ -11,10 +11,11 @@ use chrono::{TimeZone, Utc};
 use serde::{de::DeserializeOwned, Serialize};
 use weathervane::{
     AirQualityData, Alert, AlertEntry, AlertReport, AlertSeverity, AqiCategory, AqiSource,
-    CompassDirection, CurrentWeather, DailyForecast, DetectedLocation, Envelope, EnvelopeError,
-    Error, EuAqiCategory, HourlyForecast, LocationResult, MeasurementSystem, NetworkKind,
-    ParseKind, PollenData, PressureUnit, SavedLocation, TemperatureUnit, UsAqiCategory,
-    WeatherCondition, WeatherData, WireError,
+    AwarenessLevel, AwarenessType, CompassDirection, CurrentWeather, DailyForecast,
+    DetectedLocation, Envelope, EnvelopeError, Error, EuAqiCategory, HourlyForecast,
+    LocationResult, MeasurementSystem, MeteoAlarmAwareness, NetworkKind, ParseKind, PollenData,
+    PressureUnit, SavedLocation, TemperatureUnit, UsAqiCategory, WeatherCondition, WeatherData,
+    WireError,
 };
 
 // ---------------------------------------------------------------------------
@@ -307,6 +308,24 @@ fn alert() -> Alert {
         headline: "Severe thunderstorm until 10 PM EDT".to_string(),
         description: "Wind gusts to 60 mph expected.".to_string(),
         expires: Utc.with_ymd_and_hms(2026, 6, 11, 22, 0, 0).unwrap(),
+        awareness: None,
+    }
+}
+
+/// A MeteoAlarm alert: no description, and the awareness pair the JSON feed
+/// supplies. Every other provider's `awareness` is `None`, as above.
+fn alert_meteoalarm() -> Alert {
+    Alert {
+        id: "2.49.0.0.276.0.DWD.PVW.1793794860000.410fa97d".to_string(),
+        event: "Fog".to_string(),
+        severity: AlertSeverity::Moderate,
+        headline: "Official WARNING of FOG".to_string(),
+        description: String::new(),
+        expires: Utc.with_ymd_and_hms(2026, 6, 11, 22, 0, 0).unwrap(),
+        awareness: Some(MeteoAlarmAwareness {
+            kind: AwarenessType::Fog,
+            level: AwarenessLevel::Yellow,
+        }),
     }
 }
 
@@ -320,6 +339,22 @@ fn alert_shape() {
     );
     insta::assert_snapshot!("alert", pretty);
     insta::assert_snapshot!("canary_alert_severity", json(&AlertSeverity::Severe));
+}
+
+#[test]
+fn alert_meteoalarm_shape() {
+    insta::assert_snapshot!("alert_meteoalarm", round_trip(&alert_meteoalarm()));
+    insta::assert_snapshot!("canary_awareness_type", json(&AwarenessType::Fog));
+    insta::assert_snapshot!("canary_awareness_level", json(&AwarenessLevel::Yellow));
+}
+
+/// A pre-field payload (no `awareness` key) must still deserialize, as
+/// `None` via `#[serde(default)]`.
+#[test]
+fn alert_without_awareness_parses_as_none() {
+    let legacy = r#"{"id":"NWS-IDP-PROD-123","event":"Severe Thunderstorm Warning","severity":"Severe","headline":"Severe thunderstorm until 10 PM EDT","description":"Wind gusts to 60 mph expected.","expires":"2026-06-11T22:00:00Z"}"#;
+    let parsed: Alert = serde_json::from_str(legacy).unwrap();
+    assert_eq!(parsed.awareness, None);
 }
 
 fn alert_entry() -> AlertEntry {

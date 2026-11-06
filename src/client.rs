@@ -17,8 +17,8 @@ use std::time::Duration;
 
 const USER_AGENT: &str = "(weathervane, https://github.com/crenshawdev/weathervane)";
 
-/// Per-request timeout applied to all outgoing HTTP calls.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// Per-request timeout applied to all outgoing HTTP calls, unless a request sets its own.
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Kernel TCP keepalive interval. Probes detect dead peers without
 /// waiting for the full request timeout.
